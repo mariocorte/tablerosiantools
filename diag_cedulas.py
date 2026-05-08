@@ -16,9 +16,16 @@ INSERT/UPDATE/DELETE y pide confirmacion explicita escribiendo 'c'. Cualquier
 otra cosa hace ROLLBACK.
 """
 import argparse
+import builtins
+import io
 import sys
 import textwrap
+import traceback
+from contextlib import redirect_stdout
 from pathlib import Path
+
+import tkinter as tk
+from tkinter import messagebox, scrolledtext, simpledialog
 
 # Asegurar que el paquete core sea importable cuando se corre desde la raiz
 ROOT = Path(__file__).resolve().parent.parent
@@ -678,12 +685,104 @@ def submenu_acciones(conx: Conexiones):
         else: print(">>> opcion invalida")
 
 
+
+class DiagCedulasGUI:
+    """Interfaz grafica simple para ejecutar operaciones del menu."""
+
+    def __init__(self, conx: Conexiones):
+        self.conx = conx
+        self.root = tk.Tk()
+        self.root.title(f"Diagnostico Cedulas SIAN - {conx.sufijo}")
+        self.root.geometry("1100x700")
+
+        top = tk.Frame(self.root)
+        top.pack(fill=tk.X, padx=8, pady=6)
+        tk.Label(top, text=f"Ambiente: {conx.sufijo}", font=("Arial", 11, "bold")).pack(side=tk.LEFT)
+        tk.Button(top, text="Limpiar salida", command=self._clear).pack(side=tk.RIGHT)
+
+        btns = tk.Frame(self.root)
+        btns.pack(fill=tk.X, padx=8, pady=6)
+
+        acciones = [
+            ("1 Buscar cedula", op_buscar_cedula),
+            ("2 Estado end-to-end", op_estado_end2end),
+            ("3 Cedulas atascadas", op_atascadas),
+            ("4 Cedulas huerfanas", op_huerfanas),
+            ("5 Logs", op_logs),
+            ("6 Historial MP", op_historico_mp),
+            ("7 Estado ED", op_estado_ed),
+            ("8 Stats", op_stats),
+            ("A1 Descartar", acc_descartar),
+            ("A2 Re-habilitar", acc_rehabilitar),
+            ("A2b Forzar estado", acc_forzar_estado),
+            ("A4 Parche UID", acc_parche_uid),
+            ("A5 Nota sianlog", acc_nota_sianlog),
+            ("A3 Borrar", acc_borrar_cedula),
+            ("A7 Constancia", acc_marcar_constancia),
+            ("B1 Forzar ED", acc_forzar_es_enotif_ed),
+        ]
+
+        for i, (txt, fn) in enumerate(acciones):
+            tk.Button(btns, text=txt, width=22, command=lambda f=fn, t=txt: self._run_action(t, f)).grid(row=i // 4, column=i % 4, padx=4, pady=4, sticky="ew")
+
+        self.output = scrolledtext.ScrolledText(self.root, wrap=tk.WORD, font=("Consolas", 10))
+        self.output.pack(fill=tk.BOTH, expand=True, padx=8, pady=8)
+        self._write("Interfaz iniciada. Ejecuta una accion con los botones superiores.\n")
+
+    def _write(self, msg: str):
+        self.output.insert(tk.END, msg)
+        self.output.see(tk.END)
+        self.root.update_idletasks()
+
+    def _clear(self):
+        self.output.delete("1.0", tk.END)
+
+    def _ask(self, prompt: str) -> str:
+        v = simpledialog.askstring("Entrada requerida", prompt, parent=self.root)
+        return "" if v is None else v
+
+    def _confirm(self, prompt: str) -> bool:
+        return messagebox.askyesno("Confirmacion", prompt, parent=self.root)
+
+    def _run_action(self, title: str, fn):
+        self._write(f"\n===== {title} =====\n")
+        old_input = builtins.input
+
+        def gui_input(prompt=""):
+            p = prompt.strip() or "Ingrese valor"
+            if "confirma" in p.lower() or "confirmar" in p.lower() or "confirma delete" in p.lower():
+                return "c" if self._confirm(p) else ""
+            return self._ask(p)
+
+        buf = io.StringIO()
+        try:
+            builtins.input = gui_input
+            with redirect_stdout(buf):
+                fn(self.conx)
+        except Exception:
+            buf.write("\nERROR inesperado:\n")
+            buf.write(traceback.format_exc())
+        finally:
+            builtins.input = old_input
+        self._write(buf.getvalue())
+
+    def run(self):
+        self.root.mainloop()
+
+
+
 def main():
     parser = argparse.ArgumentParser(description="Diagnostico cedulas SIAN")
     parser.add_argument("--test", type=int, default=0, help="1=TEST (.251), 0=PROD (.250)")
+    parser.add_argument("--gui", action="store_true", help="Abrir interfaz grafica Tkinter")
     args = parser.parse_args()
 
     conx = Conexiones(test=bool(args.test))
+
+    if args.gui:
+        app = DiagCedulasGUI(conx)
+        app.run()
+        return
 
     try:
         while True:
