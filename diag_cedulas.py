@@ -637,6 +637,175 @@ def acc_forzar_es_enotif_ed(conx: Conexiones):
         print(f"ERROR contra BD ED: {e}")
 
 
+
+
+# ---------------------------------------------------------------------------
+# CRUD panelnotificacionesws
+# ---------------------------------------------------------------------------
+def _parse_bool(v):
+    if v is None:
+        return None
+    s = str(v).strip().lower()
+    if s in ("1", "t", "true", "s", "si", "y", "yes"):
+        return True
+    if s in ("0", "f", "false", "n", "no"):
+        return False
+    return None
+
+
+def op_crud_tablerospar(conx: Conexiones):
+    banner("CRUD TABLEROSPAR")
+    accion = (pedir("Accion [L=listar, C=crear, U=actualizar, D=borrar]", requerido=True) or "").upper()
+    conn = conx.destino()
+
+    if accion == "L":
+        grupo = pedir("par_grupo (opcional)")
+        clave = pedir("par_clave (opcional)")
+        rows = fetchall_dict(conn, """
+            SELECT par_id, par_grupo, par_clave, par_subclave, par_tipo, par_ambiente, par_activo,
+                   COALESCE(par_valor, par_valor_json::text) AS valor, par_descripcion
+            FROM tablerospar
+            WHERE (%(g)s IS NULL OR par_grupo = %(g)s)
+              AND (%(c)s IS NULL OR par_clave ILIKE '%%' || %(c)s || '%%')
+            ORDER BY par_grupo, par_clave, par_id
+            LIMIT 200
+        """, {"g": grupo, "c": clave})
+        imprimir_tabla(rows)
+    elif accion == "C":
+        params = {
+            "g": pedir("par_grupo", requerido=True),
+            "c": pedir("par_clave", requerido=True),
+            "s": pedir("par_subclave"),
+            "t": (pedir("par_tipo [STRING/NUMBER/BOOLEAN/JSON/FLAG]", requerido=True) or "").upper(),
+            "a": (pedir("par_ambiente [PROD/HOMO/DEV/TODOS]", default="TODOS") or "TODOS").upper(),
+            "act": _parse_bool(pedir("par_activo [true/false]", default="true")),
+            "desc": pedir("par_descripcion"),
+            "u": pedir("par_usuario_alta", default="diag_cedulas"),
+            "v": pedir("par_valor (para STRING/NUMBER/BOOLEAN)")
+        }
+        raw_json = pedir("par_valor_json (JSON texto, opcional)")
+        params["vj"] = raw_json
+        sql = """
+            INSERT INTO tablerospar(par_grupo, par_clave, par_subclave, par_valor, par_valor_json, par_tipo,
+                                     par_ambiente, par_activo, par_descripcion, par_usuario_alta)
+            VALUES (%(g)s, %(c)s, %(s)s, %(v)s, %(vj)s::jsonb, %(t)s, %(a)s, %(act)s, %(desc)s, %(u)s)
+            RETURNING par_id;
+        """
+        with conn.cursor() as cur:
+            cur.execute(sql, params)
+            new_id = cur.fetchone()[0]
+        conn.commit()
+        print(f"OK insertado par_id={new_id}")
+    elif accion == "U":
+        par_id = pedir("par_id", requerido=True, tipo=int)
+        rows = fetchall_dict(conn, "SELECT * FROM tablerospar WHERE par_id=%(id)s", {"id": par_id})
+        imprimir_tabla(rows)
+        if not rows:
+            return
+        curr = rows[0]
+        tipo = (pedir("par_tipo", default=curr["par_tipo"]) or curr["par_tipo"]).upper()
+        val = pedir("par_valor", default=curr.get("par_valor"))
+        val_json = pedir("par_valor_json", default=(curr.get("par_valor_json") and str(curr.get("par_valor_json"))))
+        params = {
+            "id": par_id,
+            "g": pedir("par_grupo", default=curr["par_grupo"]),
+            "c": pedir("par_clave", default=curr["par_clave"]),
+            "s": pedir("par_subclave", default=curr.get("par_subclave")),
+            "t": tipo,
+            "a": (pedir("par_ambiente", default=curr["par_ambiente"]) or curr["par_ambiente"]).upper(),
+            "act": _parse_bool(pedir("par_activo", default=str(curr["par_activo"]))),
+            "desc": pedir("par_descripcion", default=curr.get("par_descripcion")),
+            "um": pedir("par_usuario_modif", default="diag_cedulas"),
+            "v": val,
+            "vj": val_json,
+        }
+        with conn.cursor() as cur:
+            cur.execute("""
+                UPDATE tablerospar
+                   SET par_grupo=%(g)s, par_clave=%(c)s, par_subclave=%(s)s, par_valor=%(v)s,
+                       par_valor_json=%(vj)s::jsonb, par_tipo=%(t)s, par_ambiente=%(a)s,
+                       par_activo=%(act)s, par_descripcion=%(desc)s, par_fecha_modif=now(),
+                       par_usuario_modif=%(um)s
+                 WHERE par_id=%(id)s
+            """, params)
+        conn.commit()
+        print("OK actualizado")
+    elif accion == "D":
+        par_id = pedir("par_id", requerido=True, tipo=int)
+        _preview_y_aplicar(conn,
+            "SELECT * FROM tablerospar WHERE par_id=%(id)s",
+            "DELETE FROM tablerospar WHERE par_id=%(id)s",
+            {"id": par_id},
+            descripcion="DELETE tablerospar")
+    else:
+        print("Accion invalida")
+
+
+def op_crud_simple(conx: Conexiones, table: str, pk_fields, editable_fields):
+    banner(f"CRUD {table.upper()}")
+    accion = (pedir("Accion [L=listar, C=crear, U=actualizar, D=borrar]", requerido=True) or "").upper()
+    conn = conx.destino()
+    if accion == "L":
+        rows = fetchall_dict(conn, f"SELECT * FROM {table} ORDER BY 1 LIMIT 200")
+        imprimir_tabla(rows)
+        return
+    if accion == "C":
+        params = {f: pedir(f, requerido=True) for f in editable_fields}
+        cols = ", ".join(editable_fields)
+        vals = ", ".join([f"%({f})s" for f in editable_fields])
+        with conn.cursor() as cur:
+            cur.execute(f"INSERT INTO {table} ({cols}) VALUES ({vals})")
+        conn.commit()
+        print("OK insertado")
+        return
+    if accion in ("U", "D"):
+        where = []
+        params = {}
+        for f in pk_fields:
+            params[f] = pedir(f, requerido=True)
+            where.append(f"{f}=%({f})s")
+        where_sql = " AND ".join(where)
+        rows = fetchall_dict(conn, f"SELECT * FROM {table} WHERE {where_sql}", params)
+        imprimir_tabla(rows)
+        if not rows:
+            return
+        if accion == "U":
+            current = rows[0]
+            for f in editable_fields:
+                if f in pk_fields:
+                    continue
+                params[f] = pedir(f, default=current.get(f))
+            set_sql = ", ".join([f"{f}=%({f})s" for f in editable_fields if f not in pk_fields])
+            with conn.cursor() as cur:
+                cur.execute(f"UPDATE {table} SET {set_sql} WHERE {where_sql}", params)
+            conn.commit()
+            print("OK actualizado")
+        else:
+            _preview_y_aplicar(conn, f"SELECT * FROM {table} WHERE {where_sql}", f"DELETE FROM {table} WHERE {where_sql}", params, descripcion=f"DELETE {table}")
+
+
+def op_buscar_secuser_relaciones(conx: Conexiones):
+    banner("BUSCAR SECUSER + RELACIONES")
+    user_id = pedir("secuserid (opcional)", tipo=int)
+    username = pedir("secusername (opcional)")
+    rows = fetchall_dict(conx.destino(), """
+        SELECT u.secuserid, u.secusername, u.secuserpassword,
+               COALESCE(string_agg(DISTINCT r.secrolename, ', '), '') AS roles,
+               COALESCE(string_agg(DISTINCT j.pdomicilioelectronicopj, ', '), '') AS juzgados,
+               count(DISTINCT ur.secroleid) AS cant_roles,
+               count(DISTINCT j.juzgadosxrolid) AS cant_juzgados_asociados
+          FROM secuser u
+          LEFT JOIN secuserrole ur ON ur.secuserid = u.secuserid
+          LEFT JOIN secrole r ON r.secroleid = ur.secroleid
+          LEFT JOIN juzgadosxrol j ON j.secroleid = r.secroleid
+         WHERE (%(id)s IS NULL OR u.secuserid = %(id)s)
+           AND (%(name)s IS NULL OR u.secusername ILIKE '%%' || %(name)s || '%%')
+         GROUP BY u.secuserid, u.secusername, u.secuserpassword
+         ORDER BY u.secuserid
+         LIMIT 200
+    """, {"id": user_id, "name": username})
+    imprimir_tabla(rows)
+
 # ---------------------------------------------------------------------------
 # Menu principal
 # ---------------------------------------------------------------------------
@@ -720,6 +889,12 @@ class DiagCedulasGUI:
             ("A3 Borrar", acc_borrar_cedula),
             ("A7 Constancia", acc_marcar_constancia),
             ("B1 Forzar ED", acc_forzar_es_enotif_ed),
+            ("CRUD tablerospar", op_crud_tablerospar),
+            ("CRUD secrole", lambda c: op_crud_simple(c, "secrole", ["secroleid"], ["secrolename", "secroledescription"])),
+            ("CRUD secuser", lambda c: op_crud_simple(c, "secuser", ["secuserid"], ["secusername", "secuserpassword"])),
+            ("CRUD juzgadosxrol", lambda c: op_crud_simple(c, "juzgadosxrol", ["juzgadosxrolid"], ["secroleid", "pdomicilioelectronicopj", "distrito_id"])),
+            ("CRUD secuserrole", lambda c: op_crud_simple(c, "secuserrole", ["secuserid", "secroleid"], ["secuserid", "secroleid"])),
+            ("Buscar secuser+rel", op_buscar_secuser_relaciones),
         ]
 
         for i, (txt, fn) in enumerate(acciones):
