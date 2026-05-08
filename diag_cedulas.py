@@ -31,12 +31,22 @@ import psycopg2.extras
 NEON_BG = "#000000"
 NEON_FG = "#00ff66"
 NEON_ACCENT = "#00cc55"
+BUTTON_BG = "#b3b3b3"
+BUTTON_FG = "#000000"
 
 
 def apply_neon_palette(widget):
     """Aplica paleta negro/verde a widgets Tk clasicos recursivamente."""
     try:
-        widget.configure(bg=NEON_BG, fg=NEON_FG, insertbackground=NEON_FG)
+        if isinstance(widget, tk.Button):
+            widget.configure(
+                bg=BUTTON_BG,
+                fg=BUTTON_FG,
+                activebackground=BUTTON_BG,
+                activeforeground=BUTTON_FG,
+            )
+        else:
+            widget.configure(bg=NEON_BG, fg=NEON_FG, insertbackground=NEON_FG)
     except Exception:
         try:
             widget.configure(bg=NEON_BG)
