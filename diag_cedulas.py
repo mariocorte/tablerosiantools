@@ -22,7 +22,7 @@ from contextlib import redirect_stdout
 from pathlib import Path
 
 import tkinter as tk
-from tkinter import messagebox, scrolledtext, simpledialog
+from tkinter import messagebox, scrolledtext, simpledialog, ttk
 
 import psycopg2
 import psycopg2.extras
@@ -879,6 +879,174 @@ def submenu_acciones(conx: Conexiones):
 
 
 
+
+
+class TablerosParCrudWindow:
+    """CRUD amigable de tablerospar con grilla + formulario."""
+
+    COLUMNS = [
+        "par_id", "par_grupo", "par_clave", "par_subclave", "par_valor", "par_valor_json",
+        "par_tipo", "par_ambiente", "par_activo", "par_descripcion", "par_usuario_alta",
+        "par_usuario_modif",
+    ]
+
+    def __init__(self, parent, conx: Conexiones, write_log):
+        self.parent = parent
+        self.conx = conx
+        self.conn = conx.panelws()
+        self.write_log = write_log
+        self.rows_by_id = {}
+
+        self.win = tk.Toplevel(parent)
+        self.win.title("CRUD TablerosPar")
+        self.win.geometry("1250x650")
+
+        filters = tk.LabelFrame(self.win, text="Filtros")
+        filters.pack(fill=tk.X, padx=8, pady=6)
+        self.var_grupo = tk.StringVar()
+        self.var_clave = tk.StringVar()
+        tk.Label(filters, text="Grupo").grid(row=0, column=0, padx=4, pady=4)
+        tk.Entry(filters, textvariable=self.var_grupo, width=30).grid(row=0, column=1, padx=4, pady=4)
+        tk.Label(filters, text="Clave contiene").grid(row=0, column=2, padx=4, pady=4)
+        tk.Entry(filters, textvariable=self.var_clave, width=30).grid(row=0, column=3, padx=4, pady=4)
+        tk.Button(filters, text="Filtrar", command=self.refresh).grid(row=0, column=4, padx=4, pady=4)
+        tk.Button(filters, text="Limpiar", command=self.clear_filters).grid(row=0, column=5, padx=4, pady=4)
+        tk.Button(filters, text="Agregar", command=self.open_create_form).grid(row=0, column=6, padx=4, pady=4)
+
+        grid_fr = tk.Frame(self.win)
+        grid_fr.pack(fill=tk.BOTH, expand=True, padx=8, pady=6)
+        show_cols = ["par_id", "par_grupo", "par_clave", "par_subclave", "par_tipo", "par_ambiente", "par_activo", "valor"]
+        self.tree = ttk.Treeview(grid_fr, columns=show_cols, show="headings", height=18)
+        for c in show_cols:
+            self.tree.heading(c, text=c)
+            self.tree.column(c, width=130 if c != "valor" else 280, stretch=True)
+        yscroll = ttk.Scrollbar(grid_fr, orient=tk.VERTICAL, command=self.tree.yview)
+        self.tree.configure(yscrollcommand=yscroll.set)
+        self.tree.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
+        yscroll.pack(side=tk.RIGHT, fill=tk.Y)
+        self.tree.bind("<Double-1>", self._on_double_click)
+
+        tk.Label(self.win, text="Doble click en una fila para editar / borrar.").pack(anchor="w", padx=10, pady=2)
+        self.refresh()
+
+    def clear_filters(self):
+        self.var_grupo.set("")
+        self.var_clave.set("")
+        self.refresh()
+
+    def refresh(self):
+        grupo = (self.var_grupo.get() or "").strip() or None
+        clave = (self.var_clave.get() or "").strip() or None
+        sql = """
+            SELECT par_id, par_grupo, par_clave, par_subclave, par_valor, par_valor_json,
+                   par_tipo, par_ambiente, par_activo, par_descripcion, par_usuario_alta,
+                   par_usuario_modif
+            FROM tablerospar
+            WHERE (%(g)s IS NULL OR par_grupo = %(g)s)
+              AND (%(c)s IS NULL OR par_clave ILIKE '%%' || %(c)s || '%%')
+            ORDER BY par_grupo, par_clave, par_id
+            LIMIT 500
+        """
+        rows = fetchall_dict(self.conn, sql, {"g": grupo, "c": clave})
+        self.rows_by_id = {str(r["par_id"]): r for r in rows}
+        for i in self.tree.get_children():
+            self.tree.delete(i)
+        for r in rows:
+            valor = r.get("par_valor") if r.get("par_valor") is not None else str(r.get("par_valor_json") or "")
+            self.tree.insert("", tk.END, iid=str(r["par_id"]), values=(
+                r["par_id"], r.get("par_grupo"), r.get("par_clave"), r.get("par_subclave"),
+                r.get("par_tipo"), r.get("par_ambiente"), r.get("par_activo"), valor
+            ))
+        self.write_log(f"CRUD tablerospar: {len(rows)} fila(s) cargadas.\n")
+
+    def _on_double_click(self, _evt):
+        sel = self.tree.selection()
+        if not sel:
+            return
+        row = self.rows_by_id.get(sel[0])
+        if row:
+            self.open_edit_form(row)
+
+    def open_create_form(self):
+        self._open_form("Agregar tablerospar")
+
+    def open_edit_form(self, row):
+        self._open_form(f"Editar tablerospar #{row['par_id']}", row=row)
+
+    def _open_form(self, title, row=None):
+        win = tk.Toplevel(self.win)
+        win.title(title)
+        win.geometry("700x560")
+        vars_map = {}
+        for idx, field in enumerate(self.COLUMNS):
+            tk.Label(win, text=field).grid(row=idx, column=0, sticky="w", padx=8, pady=4)
+            val = "" if row is None or row.get(field) is None else str(row.get(field))
+            sv = tk.StringVar(value=val)
+            vars_map[field] = sv
+            tk.Entry(win, textvariable=sv, width=70).grid(row=idx, column=1, sticky="ew", padx=8, pady=4)
+
+        vars_map["par_id"].set("" if row is None else str(row["par_id"]))
+
+        def _normalize(v):
+            return None if v is None or str(v).strip() == "" else str(v).strip()
+
+        def do_save():
+            values = {k: _normalize(v.get()) for k, v in vars_map.items()}
+            values["par_activo"] = _parse_bool(values.get("par_activo"))
+            if values["par_activo"] is None:
+                messagebox.showerror("Error", "par_activo debe ser true/false")
+                return
+            values["par_tipo"] = (values.get("par_tipo") or "").upper()
+            values["par_ambiente"] = (values.get("par_ambiente") or "TODOS").upper()
+            if not values.get("par_grupo") or not values.get("par_clave"):
+                messagebox.showerror("Error", "par_grupo y par_clave son requeridos")
+                return
+            if not messagebox.askyesno("Confirmar", "¿Confirmás guardar los cambios?", parent=win):
+                return
+            with self.conn.cursor() as cur:
+                if row is None:
+                    cur.execute("""
+                        INSERT INTO tablerospar(par_grupo, par_clave, par_subclave, par_valor, par_valor_json, par_tipo,
+                                                par_ambiente, par_activo, par_descripcion, par_usuario_alta)
+                        VALUES (%(par_grupo)s, %(par_clave)s, %(par_subclave)s, %(par_valor)s, %(par_valor_json)s::jsonb,
+                                %(par_tipo)s, %(par_ambiente)s, %(par_activo)s, %(par_descripcion)s, %(par_usuario_alta)s)
+                    """, values)
+                    self.write_log("tablerospar insertado.\n")
+                else:
+                    values["par_id"] = int(values["par_id"])
+                    cur.execute("""
+                        UPDATE tablerospar
+                           SET par_grupo=%(par_grupo)s, par_clave=%(par_clave)s, par_subclave=%(par_subclave)s,
+                               par_valor=%(par_valor)s, par_valor_json=%(par_valor_json)s::jsonb,
+                               par_tipo=%(par_tipo)s, par_ambiente=%(par_ambiente)s, par_activo=%(par_activo)s,
+                               par_descripcion=%(par_descripcion)s, par_usuario_modif=%(par_usuario_modif)s, par_fecha_modif=now()
+                         WHERE par_id=%(par_id)s
+                    """, values)
+                    self.write_log(f"tablerospar #{values['par_id']} actualizado.\n")
+            self.conn.commit()
+            self.refresh()
+            win.destroy()
+
+        def do_delete():
+            if row is None:
+                return
+            if not messagebox.askyesno("Confirmar", f"¿Seguro que querés borrar par_id={row['par_id']}?", parent=win):
+                return
+            with self.conn.cursor() as cur:
+                cur.execute("DELETE FROM tablerospar WHERE par_id=%(id)s", {"id": row["par_id"]})
+            self.conn.commit()
+            self.write_log(f"tablerospar #{row['par_id']} borrado.\n")
+            self.refresh()
+            win.destroy()
+
+        btnf = tk.Frame(win)
+        btnf.grid(row=len(self.COLUMNS)+1, column=0, columnspan=2, pady=12)
+        tk.Button(btnf, text="Guardar", command=do_save).pack(side=tk.LEFT, padx=6)
+        if row is not None:
+            tk.Button(btnf, text="Borrar", command=do_delete).pack(side=tk.LEFT, padx=6)
+        tk.Button(btnf, text="Cancelar", command=win.destroy).pack(side=tk.LEFT, padx=6)
+
+
 class DiagCedulasGUI:
     """Interfaz grafica simple para ejecutar operaciones del menu."""
 
@@ -913,7 +1081,7 @@ class DiagCedulasGUI:
             ("A3 Borrar", acc_borrar_cedula),
             ("A7 Constancia", acc_marcar_constancia),
             ("B1 Forzar ED", acc_forzar_es_enotif_ed),
-            ("CRUD tablerospar", op_crud_tablerospar),
+            ("CRUD tablerospar (con grilla)", self._open_tablerospar_crud),
             ("CRUD secrole", lambda c: op_crud_simple(c, "secrole", ["secroleid"], ["secrolename", "secroledescription"])),
             ("CRUD secuser", lambda c: op_crud_simple(c, "secuser", ["secuserid"], ["secusername", "secuserpassword"])),
             ("CRUD juzgadosxrol", lambda c: op_crud_simple(c, "juzgadosxrol", ["juzgadosxrolid"], ["secroleid", "pdomicilioelectronicopj", "distrito_id"])),
@@ -964,6 +1132,9 @@ class DiagCedulasGUI:
         finally:
             builtins.input = old_input
         self._write(buf.getvalue())
+
+    def _open_tablerospar_crud(self, _conx):
+        TablerosParCrudWindow(self.root, self.conx, self._write)
 
     def run(self):
         self.root.mainloop()
