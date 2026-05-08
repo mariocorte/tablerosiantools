@@ -1,15 +1,12 @@
 """Menu interactivo de diagnostico y acciones sobre cedulas SIAN -> Policia.
 
-Reusa la configuracion de conexiones que ya esta cableada en core/config.py:
-levanta el bootstrap (10.18.250.250 prod / .251 test), lee desde
-public.parametro los JSONs de IMPTSIAN-PGSQL-IURIXPJ-{sufijo} (BD destino) y
-IMPTSIAN-PGSQL-ED-{sufijo} (BD origen Expediente Digital), y abre conexiones
-psycopg2 por demanda.
+Usa un archivo local de configuracion (`db_config.py`) para abrir las
+conexiones psycopg2 por demanda. El archivo real con credenciales queda fuera
+del repo (ver `db_config.example.py` para el esqueleto).
 
 Uso:
-    cd D:\\Proyectos\\Python\\notpol\\docker\\DockerimpTSian
-    python tools/diag_cedulas.py            # PROD por default
-    python tools/diag_cedulas.py --test 1   # TEST
+    python diag_cedulas.py                  # PROD por default
+    python diag_cedulas.py --test 1         # TEST
 
 Cada accion correctiva muestra un PREVIEW (SELECT) antes de aplicar el
 INSERT/UPDATE/DELETE y pide confirmacion explicita escribiendo 'c'. Cualquier
@@ -27,15 +24,21 @@ from pathlib import Path
 import tkinter as tk
 from tkinter import messagebox, scrolledtext, simpledialog
 
-# Asegurar que el paquete core sea importable cuando se corre desde la raiz
-ROOT = Path(__file__).resolve().parent.parent
-if str(ROOT) not in sys.path:
-    sys.path.insert(0, str(ROOT))
-
 import psycopg2
 import psycopg2.extras
 
-from core.config import cargar_parametro_json, get_bootstrap_config
+# Carga del archivo local con credenciales (no versionado).
+ROOT = Path(__file__).resolve().parent
+if str(ROOT) not in sys.path:
+    sys.path.insert(0, str(ROOT))
+
+try:
+    from db_config import DATABASES
+except ImportError as exc:
+    raise RuntimeError(
+        "No se encontro db_config.py. Copia db_config.example.py a db_config.py "
+        "y completa las credenciales."
+    ) from exc
 
 
 # ---------------------------------------------------------------------------
@@ -118,18 +121,23 @@ class Conexiones:
     def __init__(self, test: bool):
         self.test = test
         self.sufijo = "TEST" if test else "PROD"
-        self.bootstrap = get_bootstrap_config(test)
-        print(f"[bootstrap] {self.bootstrap['host']}/{self.bootstrap['database']} ({self.sufijo})")
-        self._cfg_destino = cargar_parametro_json(
-            f"IMPTSIAN-PGSQL-IURIXPJ-{self.sufijo}", self.bootstrap
-        )
-        self._cfg_ed = cargar_parametro_json(
-            f"IMPTSIAN-PGSQL-ED-{self.sufijo}", self.bootstrap
-        )
+        cfg = DATABASES.get(self.sufijo, {})
+        self._cfg_destino = cfg.get("DESTINO")
+        self._cfg_ed = cfg.get("ED")
+
         if not self._cfg_destino:
-            sys.exit(f"ERROR: falta IMPTSIAN-PGSQL-IURIXPJ-{self.sufijo}")
+            sys.exit(f"ERROR: falta DATABASES['{self.sufijo}']['DESTINO'] en db_config.py")
+
         if not self._cfg_ed:
-            print(f"AVISO: falta IMPTSIAN-PGSQL-ED-{self.sufijo} -- las consultas contra ED van a fallar.")
+            print(
+                f"AVISO: falta DATABASES['{self.sufijo}']['ED'] en db_config.py "
+                "-- las consultas contra ED van a fallar."
+            )
+
+        destino_host = self._cfg_destino.get("host", "?")
+        destino_db = self._cfg_destino.get("dbname") or self._cfg_destino.get("database", "?")
+        print(f"[destino] {destino_host}/{destino_db} ({self.sufijo})")
+
         self._conn_destino = None
         self._conn_ed = None
 
