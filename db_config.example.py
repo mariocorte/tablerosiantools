@@ -20,6 +20,13 @@ DATABASES = {
             "user": "",
             "password": "",
         },
+        "PANELNOTIFICACIONESWS": {
+            "host": "",
+            "port": 5432,
+            "dbname": "",
+            "user": "",
+            "password": "",
+        },
     },
     "TEST": {
         "DESTINO": {
@@ -30,6 +37,13 @@ DATABASES = {
             "password": "",
         },
         "ED": {
+            "host": "",
+            "port": 5432,
+            "dbname": "",
+            "user": "",
+            "password": "",
+        },
+        "PANELNOTIFICACIONESWS": {
             "host": "",
             "port": 5432,
             "dbname": "",
