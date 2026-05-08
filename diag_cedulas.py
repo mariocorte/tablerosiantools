@@ -27,6 +27,34 @@ from tkinter import messagebox, scrolledtext, simpledialog, ttk
 import psycopg2
 import psycopg2.extras
 
+
+NEON_BG = "#000000"
+NEON_FG = "#00ff66"
+NEON_ACCENT = "#00cc55"
+
+
+def apply_neon_palette(widget):
+    """Aplica paleta negro/verde a widgets Tk clasicos recursivamente."""
+    try:
+        widget.configure(bg=NEON_BG, fg=NEON_FG, insertbackground=NEON_FG)
+    except Exception:
+        try:
+            widget.configure(bg=NEON_BG)
+        except Exception:
+            pass
+    for child in widget.winfo_children():
+        apply_neon_palette(child)
+
+
+def configure_ttk_neon(root):
+    style = ttk.Style(root)
+    style.theme_use("clam")
+    style.configure(".", background=NEON_BG, foreground=NEON_FG, fieldbackground=NEON_BG)
+    style.configure("Treeview", background=NEON_BG, foreground=NEON_FG, fieldbackground=NEON_BG)
+    style.configure("Treeview.Heading", background=NEON_BG, foreground=NEON_FG)
+    style.map("Treeview", background=[("selected", "#003311")], foreground=[("selected", NEON_FG)])
+    style.configure("TScrollbar", background=NEON_BG, troughcolor=NEON_BG, arrowcolor=NEON_FG)
+
 # Carga del archivo local con credenciales (no versionado).
 ROOT = Path(__file__).resolve().parent
 if str(ROOT) not in sys.path:
@@ -927,6 +955,7 @@ class TablerosParCrudWindow:
         self.tree.bind("<Double-1>", self._on_double_click)
 
         tk.Label(self.win, text="Doble click en una fila para editar / borrar.").pack(anchor="w", padx=10, pady=2)
+        apply_neon_palette(self.win)
         self.refresh()
 
     def clear_filters(self):
@@ -1047,14 +1076,102 @@ class TablerosParCrudWindow:
         tk.Button(btnf, text="Cancelar", command=win.destroy).pack(side=tk.LEFT, padx=6)
 
 
+
+
+class GenericCrudWindow:
+    def __init__(self, parent, conx: Conexiones, write_log, table: str, pk_fields, editable_fields):
+        self.conn = conx.panelws()
+        self.write_log = write_log
+        self.table = table
+        self.pk_fields = pk_fields
+        self.editable_fields = editable_fields
+        self.win = tk.Toplevel(parent)
+        self.win.title(f"CRUD {table}")
+        self.win.geometry("1100x620")
+
+        top = tk.Frame(self.win)
+        top.pack(fill=tk.X, padx=8, pady=6)
+        tk.Button(top, text="Refrescar", command=self.refresh).pack(side=tk.LEFT, padx=4)
+        tk.Button(top, text="Agregar", command=self.open_create_form).pack(side=tk.LEFT, padx=4)
+
+        self.tree = ttk.Treeview(self.win, show="headings", height=20)
+        self.tree.pack(fill=tk.BOTH, expand=True, padx=8, pady=8)
+        self.tree.bind("<Double-1>", self._on_double_click)
+        apply_neon_palette(self.win)
+        self.refresh()
+
+    def refresh(self):
+        rows = fetchall_dict(self.conn, f"SELECT * FROM {self.table} ORDER BY 1 LIMIT 500")
+        self.rows = rows
+        cols = list(rows[0].keys()) if rows else (self.pk_fields + [f for f in self.editable_fields if f not in self.pk_fields])
+        self.tree["columns"] = cols
+        for c in cols:
+            self.tree.heading(c, text=c)
+            self.tree.column(c, width=160, stretch=True)
+        for i in self.tree.get_children():
+            self.tree.delete(i)
+        for r in rows:
+            key = "|".join(str(r.get(k)) for k in self.pk_fields)
+            self.tree.insert("", tk.END, iid=key, values=[r.get(c) for c in cols])
+        self.write_log(f"CRUD {self.table}: {len(rows)} fila(s).\n")
+
+    def _on_double_click(self, _):
+        sel = self.tree.selection()
+        if not sel: return
+        k = sel[0].split("|")
+        row = None
+        for r in self.rows:
+            if [str(r.get(pk)) for pk in self.pk_fields] == k:
+                row = r; break
+        if row: self._open_form(f"Editar {self.table}", row)
+
+    def open_create_form(self):
+        self._open_form(f"Agregar {self.table}", None)
+
+    def _open_form(self, title, row):
+        w=tk.Toplevel(self.win); w.title(title); w.geometry("700x420")
+        fields=list(dict.fromkeys(self.pk_fields + self.editable_fields))
+        vars_map={}
+        for i,f in enumerate(fields):
+            tk.Label(w,text=f).grid(row=i,column=0,sticky="w",padx=6,pady=4)
+            sv=tk.StringVar(value="" if row is None or row.get(f) is None else str(row.get(f)))
+            vars_map[f]=sv
+            tk.Entry(w,textvariable=sv,width=60).grid(row=i,column=1,padx=6,pady=4,sticky="ew")
+        def save():
+            vals={k:(v.get().strip() or None) for k,v in vars_map.items()}
+            with self.conn.cursor() as cur:
+                if row is None:
+                    cols=", ".join(fields); ph=", ".join([f"%({f})s" for f in fields])
+                    cur.execute(f"INSERT INTO {self.table} ({cols}) VALUES ({ph})", vals)
+                else:
+                    setf=[f for f in self.editable_fields if f not in self.pk_fields]
+                    set_sql=", ".join([f"{f}=%({f})s" for f in setf])
+                    where=" AND ".join([f"{k}=%({k})s" for k in self.pk_fields])
+                    cur.execute(f"UPDATE {self.table} SET {set_sql} WHERE {where}", vals)
+            self.conn.commit(); self.refresh(); w.destroy()
+        def delete():
+            if row is None: return
+            vals={k:vars_map[k].get() for k in self.pk_fields}
+            where=" AND ".join([f"{k}=%({k})s" for k in self.pk_fields])
+            with self.conn.cursor() as cur:
+                cur.execute(f"DELETE FROM {self.table} WHERE {where}", vals)
+            self.conn.commit(); self.refresh(); w.destroy()
+        bf=tk.Frame(w); bf.grid(row=len(fields)+1,column=0,columnspan=2,pady=10)
+        tk.Button(bf,text="Guardar",command=save).pack(side=tk.LEFT,padx=5)
+        if row is not None: tk.Button(bf,text="Borrar",command=delete).pack(side=tk.LEFT,padx=5)
+        tk.Button(bf,text="Cancelar",command=w.destroy).pack(side=tk.LEFT,padx=5)
+        apply_neon_palette(w)
+
 class DiagCedulasGUI:
     """Interfaz grafica simple para ejecutar operaciones del menu."""
 
     def __init__(self, conx: Conexiones):
         self.conx = conx
         self.root = tk.Tk()
+        configure_ttk_neon(self.root)
         self.root.title(f"Diagnostico Cedulas SIAN - {conx.sufijo}")
         self.root.geometry("1100x700")
+        self.root.configure(bg=NEON_BG)
 
         top = tk.Frame(self.root)
         top.pack(fill=tk.X, padx=8, pady=6)
@@ -1082,18 +1199,19 @@ class DiagCedulasGUI:
             ("A7 Constancia", acc_marcar_constancia),
             ("B1 Forzar ED", acc_forzar_es_enotif_ed),
             ("CRUD tablerospar (con grilla)", self._open_tablerospar_crud),
-            ("CRUD secrole", lambda c: op_crud_simple(c, "secrole", ["secroleid"], ["secrolename", "secroledescription"])),
-            ("CRUD secuser", lambda c: op_crud_simple(c, "secuser", ["secuserid"], ["secusername", "secuserpassword"])),
-            ("CRUD juzgadosxrol", lambda c: op_crud_simple(c, "juzgadosxrol", ["juzgadosxrolid"], ["secroleid", "pdomicilioelectronicopj", "distrito_id"])),
-            ("CRUD secuserrole", lambda c: op_crud_simple(c, "secuserrole", ["secuserid", "secroleid"], ["secuserid", "secroleid"])),
+            ("CRUD secrole", lambda c: self._open_generic_crud("secrole", ["secroleid"], ["secroleid", "secrolename", "secroledescription"])),
+            ("CRUD secuser", lambda c: self._open_generic_crud("secuser", ["secuserid"], ["secuserid", "secusername", "secuserpassword"])),
+            ("CRUD juzgadosxrol", lambda c: self._open_generic_crud("juzgadosxrol", ["juzgadosxrolid"], ["juzgadosxrolid", "secroleid", "pdomicilioelectronicopj", "distrito_id"])),
+            ("CRUD secuserrole", lambda c: self._open_generic_crud("secuserrole", ["secuserid", "secroleid"], ["secuserid", "secroleid"])),
             ("Buscar secuser+rel", op_buscar_secuser_relaciones),
         ]
 
         for i, (txt, fn) in enumerate(acciones):
             tk.Button(btns, text=txt, width=22, command=lambda f=fn, t=txt: self._run_action(t, f)).grid(row=i // 4, column=i % 4, padx=4, pady=4, sticky="ew")
 
-        self.output = scrolledtext.ScrolledText(self.root, wrap=tk.WORD, font=("Consolas", 10))
+        self.output = scrolledtext.ScrolledText(self.root, wrap=tk.WORD, font=("Consolas", 10), bg=NEON_BG, fg=NEON_FG, insertbackground=NEON_FG)
         self.output.pack(fill=tk.BOTH, expand=True, padx=8, pady=8)
+        apply_neon_palette(self.root)
         self._write("Interfaz iniciada. Ejecuta una accion con los botones superiores.\n")
 
     def _write(self, msg: str):
@@ -1135,6 +1253,9 @@ class DiagCedulasGUI:
 
     def _open_tablerospar_crud(self, _conx):
         TablerosParCrudWindow(self.root, self.conx, self._write)
+
+    def _open_generic_crud(self, table, pk_fields, editable_fields):
+        GenericCrudWindow(self.root, self.conx, self._write, table, pk_fields, editable_fields)
 
     def run(self):
         self.root.mainloop()
