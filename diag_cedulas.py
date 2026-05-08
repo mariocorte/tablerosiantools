@@ -116,7 +116,7 @@ def confirmar(msg="confirma con 'c' (cualquier otra cosa = cancelar)") -> bool:
 # Conexiones
 # ---------------------------------------------------------------------------
 class Conexiones:
-    """Resuelve y cachea las conexiones psycopg2 a destino y a ED."""
+    """Resuelve y cachea conexiones psycopg2 (DESTINO, ED y PANELNOTIFICACIONESWS)."""
 
     def __init__(self, test: bool):
         self.test = test
@@ -124,6 +124,7 @@ class Conexiones:
         cfg = DATABASES.get(self.sufijo, {})
         self._cfg_destino = cfg.get("DESTINO")
         self._cfg_ed = cfg.get("ED")
+        self._cfg_panelws = cfg.get("PANELNOTIFICACIONESWS")
 
         if not self._cfg_destino:
             sys.exit(f"ERROR: falta DATABASES['{self.sufijo}']['DESTINO'] en db_config.py")
@@ -134,12 +135,19 @@ class Conexiones:
                 "-- las consultas contra ED van a fallar."
             )
 
+        if not self._cfg_panelws:
+            print(
+                f"AVISO: falta DATABASES['{self.sufijo}']['PANELNOTIFICACIONESWS'] en db_config.py "
+                "-- el CRUD de panelnotificacionesws usara DESTINO como fallback."
+            )
+
         destino_host = self._cfg_destino.get("host", "?")
         destino_db = self._cfg_destino.get("dbname") or self._cfg_destino.get("database", "?")
         print(f"[destino] {destino_host}/{destino_db} ({self.sufijo})")
 
         self._conn_destino = None
         self._conn_ed = None
+        self._conn_panelws = None
 
     def destino(self):
         if self._conn_destino is None or self._conn_destino.closed:
@@ -153,8 +161,16 @@ class Conexiones:
             self._conn_ed = psycopg2.connect(**self._cfg_ed)
         return self._conn_ed
 
+
+    def panelws(self):
+        if not self._cfg_panelws:
+            return self.destino()
+        if self._conn_panelws is None or self._conn_panelws.closed:
+            self._conn_panelws = psycopg2.connect(**self._cfg_panelws)
+        return self._conn_panelws
+
     def cerrar(self):
-        for c in (self._conn_destino, self._conn_ed):
+        for c in (self._conn_destino, self._conn_ed, self._conn_panelws):
             try:
                 if c and not c.closed:
                     c.close()
@@ -664,7 +680,7 @@ def _parse_bool(v):
 def op_crud_tablerospar(conx: Conexiones):
     banner("CRUD TABLEROSPAR")
     accion = (pedir("Accion [L=listar, C=crear, U=actualizar, D=borrar]", requerido=True) or "").upper()
-    conn = conx.destino()
+    conn = conx.panelws()
 
     if accion == "L":
         grupo = pedir("par_grupo (opcional)")
@@ -752,7 +768,7 @@ def op_crud_tablerospar(conx: Conexiones):
 def op_crud_simple(conx: Conexiones, table: str, pk_fields, editable_fields):
     banner(f"CRUD {table.upper()}")
     accion = (pedir("Accion [L=listar, C=crear, U=actualizar, D=borrar]", requerido=True) or "").upper()
-    conn = conx.destino()
+    conn = conx.panelws()
     if accion == "L":
         rows = fetchall_dict(conn, f"SELECT * FROM {table} ORDER BY 1 LIMIT 200")
         imprimir_tabla(rows)
@@ -796,7 +812,7 @@ def op_buscar_secuser_relaciones(conx: Conexiones):
     banner("BUSCAR SECUSER + RELACIONES")
     user_id = pedir("secuserid (opcional)", tipo=int)
     username = pedir("secusername (opcional)")
-    rows = fetchall_dict(conx.destino(), """
+    rows = fetchall_dict(conx.panelws(), """
         SELECT u.secuserid, u.secusername, u.secuserpassword,
                COALESCE(string_agg(DISTINCT r.secrolename, ', '), '') AS roles,
                COALESCE(string_agg(DISTINCT j.pdomicilioelectronicopj, ', '), '') AS juzgados,
