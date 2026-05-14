@@ -1192,32 +1192,32 @@ class DiagCedulasGUI:
         btns.pack(fill=tk.X, padx=8, pady=6)
 
         acciones = [
-            ("1 Buscar cedula", op_buscar_cedula),
-            ("2 Estado end-to-end", op_estado_end2end),
-            ("3 Cedulas atascadas", op_atascadas),
-            ("4 Cedulas huerfanas", op_huerfanas),
-            ("5 Logs", op_logs),
-            ("6 Historial MP", op_historico_mp),
-            ("7 Estado ED", op_estado_ed),
-            ("8 Stats", op_stats),
-            ("A1 Descartar", acc_descartar),
-            ("A2 Re-habilitar", acc_rehabilitar),
-            ("A2b Forzar estado", acc_forzar_estado),
-            ("A4 Parche UID", acc_parche_uid),
-            ("A5 Nota sianlog", acc_nota_sianlog),
-            ("A3 Borrar", acc_borrar_cedula),
-            ("A7 Constancia", acc_marcar_constancia),
-            ("B1 Forzar ED", acc_forzar_es_enotif_ed),
-            ("CRUD tablerospar (con grilla)", self._open_tablerospar_crud),
-            ("CRUD secrole", lambda c: self._open_generic_crud("secrole", ["secroleid"], ["secroleid", "secrolename", "secroledescription"])),
-            ("CRUD secuser", lambda c: self._open_generic_crud("secuser", ["secuserid"], ["secuserid", "secusername", "secuserpassword"])),
-            ("CRUD juzgadosxrol", lambda c: self._open_generic_crud("juzgadosxrol", ["juzgadosxrolid"], ["juzgadosxrolid", "secroleid", "pdomicilioelectronicopj", "distrito_id"])),
-            ("CRUD secuserrole", lambda c: self._open_generic_crud("secuserrole", ["secuserid", "secroleid"], ["secuserid", "secroleid"])),
-            ("Buscar secuser+rel", op_buscar_secuser_relaciones),
+            ("1 Buscar cedula", op_buscar_cedula, "Consulta una cedula puntual y muestra su trazabilidad entre tablas clave del flujo SIAN -> Policia."),
+            ("2 Estado end-to-end", op_estado_end2end, "Muestra el estado integral de una cedula a lo largo del pipeline, incluyendo pasos intermedios y estado final."),
+            ("3 Cedulas atascadas", op_atascadas, "Lista cedulas con procesamiento pendiente o bloqueado para facilitar diagnostico operativo."),
+            ("4 Cedulas huerfanas", op_huerfanas, "Detecta registros incompletos o sin relacion esperada entre tablas del proceso."),
+            ("5 Logs", op_logs, "Recupera eventos y mensajes historicos en logs para auditar errores o decisiones de negocio."),
+            ("6 Historial MP", op_historico_mp, "Consulta el historial de movimientos/procesos para una cedula en el modulo MP."),
+            ("7 Estado ED", op_estado_ed, "Verifica el estado actual en ED y ayuda a contrastar diferencias con DESTINO."),
+            ("8 Stats", op_stats, "Genera metricas y conteos resumidos para monitorear volumen y salud del flujo."),
+            ("A1 Descartar", acc_descartar, "Marca una cedula como descartada de forma controlada tras confirmar la operacion."),
+            ("A2 Re-habilitar", acc_rehabilitar, "Revierte un descarte para reingresar la cedula al circuito de procesamiento."),
+            ("A2b Forzar estado", acc_forzar_estado, "Actualiza manualmente el estado de una cedula para destrabar casos excepcionales."),
+            ("A4 Parche UID", acc_parche_uid, "Corrige o completa identificadores UID cuando hay inconsistencias de datos."),
+            ("A5 Nota sianlog", acc_nota_sianlog, "Inserta una nota tecnica en sianlog para dejar trazabilidad de una intervencion."),
+            ("A3 Borrar", acc_borrar_cedula, "Elimina registros de una cedula bajo confirmacion explicita y con vista previa previa."),
+            ("A7 Constancia", acc_marcar_constancia, "Marca constancia de gestion para dejar evidencia administrativa en el sistema."),
+            ("B1 Forzar ED", acc_forzar_es_enotif_ed, "Fuerza el indicador de e-notificacion en ED para sincronizar estados operativos."),
+            ("CRUD tablerospar (con grilla)", self._open_tablerospar_crud, "Abre una grilla para crear, editar, filtrar y borrar parametros de tablerospar."),
+            ("CRUD secrole", lambda c: self._open_generic_crud("secrole", ["secroleid"], ["secroleid", "secrolename", "secroledescription"]), "Administra roles de seguridad (alta, edicion y baja) sobre secrole."),
+            ("CRUD secuser", lambda c: self._open_generic_crud("secuser", ["secuserid"], ["secuserid", "secusername", "secuserpassword"]), "Administra usuarios de seguridad y sus datos basicos en secuser."),
+            ("CRUD juzgadosxrol", lambda c: self._open_generic_crud("juzgadosxrol", ["juzgadosxrolid"], ["juzgadosxrolid", "secroleid", "pdomicilioelectronicopj", "distrito_id"]), "Gestiona la asignacion de juzgados por rol y sus campos relacionados."),
+            ("CRUD secuserrole", lambda c: self._open_generic_crud("secuserrole", ["secuserid", "secroleid"], ["secuserid", "secroleid"]), "Gestiona vinculaciones entre usuarios y roles en la tabla secuserrole."),
+            ("Buscar secuser+rel", op_buscar_secuser_relaciones, "Busca un usuario y muestra sus relaciones de seguridad asociadas."),
         ]
 
-        for i, (txt, fn) in enumerate(acciones):
-            tk.Button(btns, text=txt, width=22, command=lambda f=fn, t=txt: self._run_action(t, f)).grid(row=i // 4, column=i % 4, padx=4, pady=4, sticky="ew")
+        for i, (txt, fn, desc) in enumerate(acciones):
+            tk.Button(btns, text=txt, width=22, command=lambda f=fn, t=txt, d=desc: self._run_action(t, f, d)).grid(row=i // 4, column=i % 4, padx=4, pady=4, sticky="ew")
 
         self.output = scrolledtext.ScrolledText(self.root, wrap=tk.WORD, font=("Consolas", 10), bg=NEON_BG, fg=NEON_FG, insertbackground=NEON_FG)
         self.output.pack(fill=tk.BOTH, expand=True, padx=8, pady=8)
@@ -1239,7 +1239,9 @@ class DiagCedulasGUI:
     def _confirm(self, prompt: str) -> bool:
         return messagebox.askyesno("Confirmacion", prompt, parent=self.root)
 
-    def _run_action(self, title: str, fn):
+    def _run_action(self, title: str, fn, description: str = ""):
+        if description:
+            self._write(f"Descripcion: {description}\n")
         self._write(f"\n===== {title} =====\n")
         old_input = builtins.input
 
