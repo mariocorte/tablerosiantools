@@ -1,13 +1,10 @@
 """Menu interactivo de diagnostico y acciones sobre cedulas SIAN -> Policia.
-
 Usa un archivo local de configuracion (`db_config.py`) para abrir las
 conexiones psycopg2 por demanda. El archivo real con credenciales queda fuera
 del repo (ver `db_config.example.py` para el esqueleto).
-
 Uso:
     python diag_cedulas.py                  # PROD por default
     python diag_cedulas.py --test 1         # TEST
-
 Cada accion correctiva muestra un PREVIEW (SELECT) antes de aplicar el
 INSERT/UPDATE/DELETE y pide confirmacion explicita escribiendo 'c'. Cualquier
 otra cosa hace ROLLBACK.
@@ -18,23 +15,18 @@ import io
 import sys
 import textwrap
 import traceback
+from datetime import datetime
 from contextlib import redirect_stdout
 from pathlib import Path
-
 import tkinter as tk
 from tkinter import messagebox, scrolledtext, simpledialog, ttk
-
 import psycopg2
 import psycopg2.extras
-
-
 NEON_BG = "#000000"
 NEON_FG = "#00ff66"
 NEON_ACCENT = "#00cc55"
 BUTTON_BG = "#b3b3b3"
 BUTTON_FG = "#000000"
-
-
 def apply_neon_palette(widget):
     """Aplica paleta negro/verde a widgets Tk clasicos recursivamente."""
     try:
@@ -54,8 +46,6 @@ def apply_neon_palette(widget):
             pass
     for child in widget.winfo_children():
         apply_neon_palette(child)
-
-
 def configure_ttk_neon(root):
     style = ttk.Style(root)
     style.theme_use("clam")
@@ -64,12 +54,10 @@ def configure_ttk_neon(root):
     style.configure("Treeview.Heading", background=NEON_BG, foreground=NEON_FG)
     style.map("Treeview", background=[("selected", "#003311")], foreground=[("selected", NEON_FG)])
     style.configure("TScrollbar", background=NEON_BG, troughcolor=NEON_BG, arrowcolor=NEON_FG)
-
 # Carga del archivo local con credenciales (no versionado).
 ROOT = Path(__file__).resolve().parent
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
-
 try:
     from db_config import DATABASES
 except ImportError as exc:
@@ -77,8 +65,6 @@ except ImportError as exc:
         "No se encontro db_config.py. Copia db_config.example.py a db_config.py "
         "y completa las credenciales."
     ) from exc
-
-
 # ---------------------------------------------------------------------------
 # Helpers de presentacion
 # ---------------------------------------------------------------------------
@@ -88,8 +74,6 @@ def banner(titulo: str) -> None:
     print(line)
     print(f"  {titulo}")
     print(line)
-
-
 def imprimir_tabla(rows, headers=None, max_col=60):
     """Imprime filas en formato tabla simple. Trunca celdas a max_col chars."""
     if not rows:
@@ -100,33 +84,27 @@ def imprimir_tabla(rows, headers=None, max_col=60):
             headers = list(rows[0].keys())
         else:
             headers = [f"c{i}" for i in range(len(rows[0]))]
-
     def cell(v):
         if v is None:
             return ""
         s = str(v).replace("\n", " ").replace("\r", " ")
         return s if len(s) <= max_col else s[: max_col - 3] + "..."
-
     data = []
     for r in rows:
         if isinstance(r, dict):
             data.append([cell(r.get(h)) for h in headers])
         else:
             data.append([cell(r[i]) if i < len(r) else "" for i, _ in enumerate(headers)])
-
     widths = [len(h) for h in headers]
     for row in data:
         for i, v in enumerate(row):
             widths[i] = max(widths[i], len(v))
-
     sep = "  ".join("-" * w for w in widths)
     print("  ".join(h.ljust(widths[i]) for i, h in enumerate(headers)))
     print(sep)
     for row in data:
         print("  ".join(row[i].ljust(widths[i]) for i in range(len(headers))))
     print(f"({len(data)} fila(s))")
-
-
 def pedir(prompt, default=None, requerido=False, tipo=str):
     """input() con default opcional y casteo a tipo. None si vacio y no requerido."""
     suf = f" [{default}]" if default is not None else ""
@@ -144,18 +122,13 @@ def pedir(prompt, default=None, requerido=False, tipo=str):
             return tipo(raw)
         except (ValueError, TypeError):
             print(f"  >>> no es {tipo.__name__} valido.")
-
-
 def confirmar(msg="confirma con 'c' (cualquier otra cosa = cancelar)") -> bool:
     return input(f"{msg}: ").strip().lower() == "c"
-
-
 # ---------------------------------------------------------------------------
 # Conexiones
 # ---------------------------------------------------------------------------
 class Conexiones:
     """Resuelve y cachea conexiones psycopg2 (DESTINO, ED, PANELNOTIFICACIONESWS e IURIXWEB)."""
-
     def __init__(self, test: bool):
         self.test = test
         self.sufijo = "TEST" if test else "PROD"
@@ -164,64 +137,52 @@ class Conexiones:
         self._cfg_ed = cfg.get("ED")
         self._cfg_panelws = cfg.get("PANELNOTIFICACIONESWS")
         self._cfg_iurixweb = cfg.get("IURIXWEB")
-
         if not self._cfg_destino:
             sys.exit(f"ERROR: falta DATABASES['{self.sufijo}']['DESTINO'] en db_config.py")
-
         if not self._cfg_ed:
             print(
                 f"AVISO: falta DATABASES['{self.sufijo}']['ED'] en db_config.py "
                 "-- las consultas contra ED van a fallar."
             )
-
         if not self._cfg_panelws:
             print(
                 f"AVISO: falta DATABASES['{self.sufijo}']['PANELNOTIFICACIONESWS'] en db_config.py "
                 "-- el CRUD de panelnotificacionesws usara DESTINO como fallback."
             )
-
         if not self._cfg_iurixweb:
             print(
                 f"AVISO: falta DATABASES['{self.sufijo}']['IURIXWEB'] en db_config.py "
                 "-- la opcion 'consultar iurix web' va a fallar."
             )
-
         destino_host = self._cfg_destino.get("host", "?")
         destino_db = self._cfg_destino.get("dbname") or self._cfg_destino.get("database", "?")
         print(f"[destino] {destino_host}/{destino_db} ({self.sufijo})")
-
         self._conn_destino = None
         self._conn_ed = None
         self._conn_panelws = None
         self._conn_iurixweb = None
-
     def destino(self):
         if self._conn_destino is None or self._conn_destino.closed:
             self._conn_destino = psycopg2.connect(**self._cfg_destino)
         return self._conn_destino
-
     def ed(self):
         if not self._cfg_ed:
             raise RuntimeError("BD ED no configurada para este sufijo")
         if self._conn_ed is None or self._conn_ed.closed:
             self._conn_ed = psycopg2.connect(**self._cfg_ed)
         return self._conn_ed
-
-
     def panelws(self):
         if not self._cfg_panelws:
             return self.destino()
         if self._conn_panelws is None or self._conn_panelws.closed:
             self._conn_panelws = psycopg2.connect(**self._cfg_panelws)
         return self._conn_panelws
-
     def iurixweb(self):
         if not self._cfg_iurixweb:
             raise RuntimeError("BD IURIXWEB no configurada para este sufijo")
         if self._conn_iurixweb is None or self._conn_iurixweb.closed:
             self._conn_iurixweb = psycopg2.connect(**self._cfg_iurixweb)
         return self._conn_iurixweb
-
     def cerrar(self):
         for c in (self._conn_destino, self._conn_ed, self._conn_panelws, self._conn_iurixweb):
             try:
@@ -229,22 +190,16 @@ class Conexiones:
                     c.close()
             except Exception:
                 pass
-
-
 def fetchall_dict(conn, sql, params=None):
     """Helper: ejecuta SELECT y devuelve list[dict] con autocommit por seguridad."""
     with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
         cur.execute(sql, params or {})
         return cur.fetchall()
-
-
 def fetchone_dict(conn, sql, params=None):
     """Helper: ejecuta SELECT y devuelve una sola fila como dict (o None)."""
     with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
         cur.execute(sql, params or {})
         return cur.fetchone()
-
-
 # ---------------------------------------------------------------------------
 # Operaciones de busqueda
 # ---------------------------------------------------------------------------
@@ -259,7 +214,6 @@ def op_buscar_cedula(conx: Conexiones):
     dac_cod       = pedir("dac_cod (CEDPOL/CEDCIT/CEDCON/CEDURG)", tipo=str)
     desde         = pedir("desde (YYYY-MM-DD)", tipo=str)
     hasta         = pedir("hasta (YYYY-MM-DD)", tipo=str)
-
     sql = """
         SELECT pmovimientoid, pactuacionid, pdomicilioelectronicopj,
                pdocumentotipoabreviatura, pnumero, panio, psufijo,
@@ -284,8 +238,6 @@ def op_buscar_cedula(conx: Conexiones):
         exp_suf=exp_suf, dac_cod=dac_cod, desde=desde, hasta=hasta,
     ))
     imprimir_tabla(rows)
-
-
 def op_estado_end2end(conx: Conexiones):
     banner("ESTADO END-TO-END")
     act = pedir("act_id (pactuacionid) [requerido]", tipo=int, requerido=True)
@@ -302,8 +254,6 @@ def op_estado_end2end(conx: Conexiones):
     """
     rows = fetchall_dict(conx.destino(), sql, dict(act=act))
     imprimir_tabla(rows)
-
-
 def op_atascadas(conx: Conexiones):
     banner("CEDULAS ATASCADAS (no descartadas, finsian=false)")
     desde = pedir("desde (YYYY-MM-DD)", tipo=str)
@@ -321,8 +271,6 @@ def op_atascadas(conx: Conexiones):
         LIMIT 100;
     """
     imprimir_tabla(fetchall_dict(conx.destino(), sql, dict(desde=desde, hasta=hasta)))
-
-
 def op_huerfanas(conx: Conexiones):
     banner("CEDULAS HUERFANAS (uidgestor en ceros)")
     sql = """
@@ -341,12 +289,9 @@ def op_huerfanas(conx: Conexiones):
         LIMIT 50;
     """
     imprimir_tabla(fetchall_dict(conx.destino(), sql))
-
-
 def op_logs(conx: Conexiones):
     banner("LOGS de la cedula")
     act = pedir("act_id (pactuacionid) [requerido]", tipo=int, requerido=True)
-
     print("\n--- sianlogsvarios ---")
     imprimir_tabla(fetchall_dict(conx.destino(), """
         SELECT sianlogsvariosid, sianlogsvariosfecha, proceso, reintentar,
@@ -357,7 +302,6 @@ def op_logs(conx: Conexiones):
         ORDER BY sianlogsvariosfecha DESC
         LIMIT 100;
     """, dict(act=act)))
-
     print("\n--- logsenviocedulapolicia ---")
     imprimir_tabla(fetchall_dict(conx.destino(), """
         SELECT logsenviocedulapoliciaid, logfecha, logestado,
@@ -367,8 +311,6 @@ def op_logs(conx: Conexiones):
         ORDER BY logfecha DESC NULLS LAST, logsenviocedulapoliciaid DESC
         LIMIT 100;
     """, dict(act=act)))
-
-
 def op_historico_mp(conx: Conexiones):
     banner("HISTORIAL MP (notpolhistoricomp)")
     act = pedir("act_id (pactuacionid)", tipo=int)
@@ -386,8 +328,6 @@ def op_historico_mp(conx: Conexiones):
         LIMIT 50;
     """
     imprimir_tabla(fetchall_dict(conx.destino(), sql, dict(act=act, cod=cod)))
-
-
 def op_estado_ed(conx: Conexiones):
     banner("ESTADO EN BD ORIGEN ED (act + uje_act + dac + exp)")
     act      = pedir("act_id", tipo=int)
@@ -418,8 +358,6 @@ def op_estado_ed(conx: Conexiones):
         )))
     except Exception as e:
         print(f"ERROR contra BD ED: {e}")
-
-
 def op_stats(conx: Conexiones):
     banner("STATS por dia / dac_cod / perror")
     desde = pedir("desde (YYYY-MM-DD)", tipo=str)
@@ -441,8 +379,6 @@ def op_stats(conx: Conexiones):
         ORDER BY 1 DESC, 2;
     """
     imprimir_tabla(fetchall_dict(conx.destino(), sql, dict(desde=desde, hasta=hasta)))
-
-
 # ---------------------------------------------------------------------------
 # Acciones (con preview + confirmacion explicita)
 # ---------------------------------------------------------------------------
@@ -470,8 +406,6 @@ def _preview_y_aplicar(conn, sql_preview, sql_apply, params, sql_post=None,
     except Exception as e:
         conn.rollback()
         print(f"ERROR -- ROLLBACK aplicado: {e}")
-
-
 def acc_descartar(conx: Conexiones):
     banner("A1) DESCARTAR cedula")
     act          = pedir("act_id [requerido]", tipo=int, requerido=True)
@@ -479,7 +413,6 @@ def acc_descartar(conx: Conexiones):
     domicilio_pj = pedir("pdomicilioelectronicopj (opcional)", tipo=str)
     usuario      = pedir("usuariodescarte (smallint)", tipo=int, default=0)
     motivo       = pedir("motivo_id (smallint, opcional)", tipo=int)
-
     sel = """
         SELECT pactuacionid, pdomicilioelectronicopj, pdocumentotipoabreviatura,
                descartada, fechadescarte, usuariodescarte, motivo_id
@@ -500,8 +433,6 @@ def acc_descartar(conx: Conexiones):
                   usr=usuario, motivo=motivo)
     _preview_y_aplicar(conx.destino(), sel, upd, params, sql_post=sel,
                        descripcion="DESCARTAR cedula")
-
-
 def acc_rehabilitar(conx: Conexiones):
     banner("A2) RE-HABILITAR cedula descartada")
     act = pedir("act_id [requerido]", tipo=int, requerido=True)
@@ -521,8 +452,6 @@ def acc_rehabilitar(conx: Conexiones):
     """
     _preview_y_aplicar(conx.destino(), sel, upd, dict(act=act), sql_post=sel,
                        descripcion="RE-HABILITAR cedula")
-
-
 def acc_forzar_estado(conx: Conexiones):
     banner("A2b) FORZAR estado via INSERT en logsenviocedulapolicia")
     print(textwrap.dedent("""
@@ -541,7 +470,6 @@ def acc_forzar_estado(conx: Conexiones):
         print(">>> logestado invalido."); return
     xml = pedir("logsxmlrespuesta (texto)", tipo=str,
                 default="forzado manualmente por diag_cedulas.py")
-
     sel = """
         SELECT pactuacionid, perror, penviocedulanotificacionexito,
                penviocedulanotificacionfechahora,
@@ -561,8 +489,6 @@ def acc_forzar_estado(conx: Conexiones):
                   est=logestado, xml=xml)
     _preview_y_aplicar(conx.destino(), sel, ins, params, sql_post=sel,
                        descripcion=f"FORZAR estado logestado={logestado}")
-
-
 def acc_parche_uid(conx: Conexiones):
     banner("A4) PARCHE uidgestor / uidgestorcedula")
     act      = pedir("act_id [requerido]", tipo=int, requerido=True)
@@ -585,8 +511,6 @@ def acc_parche_uid(conx: Conexiones):
     _preview_y_aplicar(conx.destino(), sel, upd,
                        dict(act=act, uid_a=nuevo_a, uid_c=nuevo_c),
                        sql_post=sel, descripcion="PARCHE uidgestor")
-
-
 def acc_nota_sianlog(conx: Conexiones):
     banner("A5) INSERTAR nota en sianlogsvarios")
     act          = pedir("act_id [requerido]", tipo=int, requerido=True)
@@ -622,8 +546,6 @@ def acc_nota_sianlog(conx: Conexiones):
     except Exception as e:
         conx.destino().rollback()
         print(f"ERROR -- ROLLBACK: {e}")
-
-
 def acc_borrar_cedula(conx: Conexiones):
     banner("A3) BORRAR cedula y todas sus hijas (solo si MP NO la tomo)")
     act = pedir("act_id [requerido]", tipo=int, requerido=True)
@@ -639,17 +561,14 @@ def acc_borrar_cedula(conx: Conexiones):
         SELECT 'enviocedulanotificacionpolicia', COUNT(*) FROM enviocedulanotificacionpolicia WHERE pactuacionid = %(act)s;
     """, dict(act=act))
     imprimir_tabla(counts)
-
     estado = fetchall_dict(conx.destino(), """
         SELECT pactuacionid, codigoseguimientomp, descartada
         FROM enviocedulanotificacionpolicia WHERE pactuacionid = %(act)s;
     """, dict(act=act))
     imprimir_tabla(estado)
-
     print("\nOJO: solo se borran las filas con codigoseguimientomp vacio Y descartada=false.")
     if not confirmar("Confirma DELETE?"):
         print(">>> cancelado."); return
-
     safe_filter = """
         SELECT pmovimientoid, pactuacionid, pdomicilioelectronicopj
           FROM enviocedulanotificacionpolicia
@@ -665,7 +584,6 @@ def acc_borrar_cedula(conx: Conexiones):
                     WHERE (pmovimientoid, pactuacionid, pdomicilioelectronicopj) IN ({safe_filter});
                 """, dict(act=act))
                 print(f"  {tbl}: {cur.rowcount} fila(s) borrada(s)")
-
             cur.execute("""
                 DELETE FROM enviocedulanotificacionpolicia
                 WHERE pactuacionid = %(act)s
@@ -678,8 +596,6 @@ def acc_borrar_cedula(conx: Conexiones):
     except Exception as e:
         conx.destino().rollback()
         print(f"ERROR -- ROLLBACK: {e}")
-
-
 def acc_marcar_constancia(conx: Conexiones):
     banner("MARCAR / DES-MARCAR constancia recibida")
     print(textwrap.dedent("""
@@ -689,7 +605,6 @@ def acc_marcar_constancia(conx: Conexiones):
     """).strip())
     act       = pedir("act_id [requerido]", tipo=int, requerido=True)
     nuevo_seg = pedir("ecedarchivosegnotid (numero, vacio = poner NULL)", tipo=int)
-
     sel = """
         SELECT pactuacionid, ecedarchivosegnotid, fconstanciarec, tieneconstancia
         FROM enviocedulanotificacionpolicia WHERE pactuacionid = %(act)s;
@@ -702,8 +617,6 @@ def acc_marcar_constancia(conx: Conexiones):
     _preview_y_aplicar(conx.destino(), sel, upd,
                        dict(act=act, seg=nuevo_seg), sql_post=sel,
                        descripcion="UPDATE ecedarchivosegnotid (gatilla trigger)")
-
-
 def acc_forzar_es_enotif_ed(conx: Conexiones):
     banner("B1) (BD ED) Forzar es_enotif=0 para reprocesar")
     act = pedir("act_id (uje_act_act_id) [requerido]", tipo=int, requerido=True)
@@ -719,10 +632,6 @@ def acc_forzar_es_enotif_ed(conx: Conexiones):
                            descripcion="UPDATE uje_act.es_enotif=0 (BD ED)")
     except Exception as e:
         print(f"ERROR contra BD ED: {e}")
-
-
-
-
 # ---------------------------------------------------------------------------
 # CRUD panelnotificacionesws
 # ---------------------------------------------------------------------------
@@ -735,13 +644,10 @@ def _parse_bool(v):
     if s in ("0", "f", "false", "n", "no"):
         return False
     return None
-
-
 def op_crud_tablerospar(conx: Conexiones):
     banner("CRUD TABLEROSPAR")
     accion = (pedir("Accion [L=listar, C=crear, U=actualizar, D=borrar]", requerido=True) or "").upper()
     conn = conx.panelws()
-
     if accion == "L":
         grupo = pedir("par_grupo (opcional)")
         clave = pedir("par_clave (opcional)")
@@ -823,8 +729,6 @@ def op_crud_tablerospar(conx: Conexiones):
             descripcion="DELETE tablerospar")
     else:
         print("Accion invalida")
-
-
 def op_crud_simple(conx: Conexiones, table: str, pk_fields, editable_fields):
     banner(f"CRUD {table.upper()}")
     accion = (pedir("Accion [L=listar, C=crear, U=actualizar, D=borrar]", requerido=True) or "").upper()
@@ -866,8 +770,6 @@ def op_crud_simple(conx: Conexiones, table: str, pk_fields, editable_fields):
             print("OK actualizado")
         else:
             _preview_y_aplicar(conn, f"SELECT * FROM {table} WHERE {where_sql}", f"DELETE FROM {table} WHERE {where_sql}", params, descripcion=f"DELETE {table}")
-
-
 def op_buscar_secuser_relaciones(conx: Conexiones):
     banner("BUSCAR SECUSER + RELACIONES")
     user_id = pedir("secuserid (opcional)", tipo=int)
@@ -889,75 +791,84 @@ def op_buscar_secuser_relaciones(conx: Conexiones):
          LIMIT 200
     """, {"id": user_id, "name": username})
     imprimir_tabla(rows)
-
-
+def _decode_sql_blob(raw_sql):
+    if isinstance(raw_sql, memoryview):
+        raw_sql = raw_sql.tobytes()
+    if isinstance(raw_sql, (bytes, bytearray)):
+        try:
+            return raw_sql.decode("utf-8").strip()
+        except UnicodeDecodeError:
+            return raw_sql.decode("latin-1", errors="replace").strip()
+    return str(raw_sql).strip()
+def _guardar_sql_parametro_con_bkp(conn, param_name: str, sql_anterior: str, sql_nuevo: str):
+    bkp_name = f"{param_name}-BKP-{datetime.now().strftime('%Y%m%d%H%M%S')}"
+    with conn.cursor() as cur:
+        cur.execute(
+            """
+            INSERT INTO parametro (parametronombre, parametroblobfile)
+            VALUES (%s, %s)
+            """,
+            (bkp_name, sql_anterior.encode("utf-8")),
+        )
+        cur.execute(
+            """
+            UPDATE parametro
+               SET parametroblobfile = %s
+             WHERE parametronombre = %s
+            """,
+            (sql_nuevo.encode("utf-8"), param_name),
+        )
+    conn.commit()
+    return bkp_name
+def _consulta_desde_parametro(conx: Conexiones, param_name: str, conn_target, titulo: str):
+    banner(titulo)
+    row = fetchone_dict(conx.destino(), """
+        SELECT parametroblobfile
+        FROM parametro
+        WHERE parametronombre = %s
+        LIMIT 1
+    """, (param_name,))
+    if not row or not row.get("parametroblobfile"):
+        print(f"No se encontro SQL en parametro.parametroblobfile para {param_name}")
+        return
+    sql = _decode_sql_blob(row["parametroblobfile"])
+    if not sql:
+        print("La consulta almacenada esta vacia.")
+        return
+    print(f"SQL recuperado ({param_name}):")
+    print(textwrap.indent(sql, "  "))
+    editar = input("Editar consulta y guardar en parametro? (s/N): ").strip().lower() == "s"
+    if editar:
+        print("Pegue el nuevo SQL. Finalice con una linea que contenga solo ##END##")
+        lineas = []
+        while True:
+            ln = input("")
+            if ln.strip() == "##END##":
+                break
+            lineas.append(ln)
+        sql_nuevo = "\n".join(lineas).strip()
+        if not sql_nuevo:
+            print("No se ingreso SQL nuevo. Se mantiene la version actual.")
+        elif sql_nuevo == sql:
+            print("Sin cambios: el SQL nuevo es igual al actual.")
+        else:
+            if confirmar("Confirma guardar nueva consulta con backup previo? ('c' para confirmar)"):
+                try:
+                    bkp = _guardar_sql_parametro_con_bkp(conx.destino(), param_name, sql, sql_nuevo)
+                    print(f"Consulta actualizada. Backup guardado como: {bkp}")
+                    sql = sql_nuevo
+                except Exception as exc:
+                    conx.destino().rollback()
+                    print(f"No se pudo guardar el cambio: {exc}")
+            else:
+                print("Edicion cancelada.")
+    print("Ejecutando consulta almacenada...")
+    rows = fetchall_dict(conn_target, sql)
+    imprimir_tabla(rows)
 def op_consultar_iurix_web(conx: Conexiones):
-    banner("CONSULTAR IURIX WEB (SQL-ACT-VIO-SIAN)")
-    row = fetchone_dict(conx.destino(), """
-        SELECT parametroblobfile
-        FROM parametro
-        WHERE parametronombre = %s
-        LIMIT 1
-    """, ("SQL-ACT-VIO-SIAN",))
-    if not row or not row.get("parametroblobfile"):
-        print("No se encontro SQL en parametro.parametroblobfile para SQL-ACT-VIO-SIAN")
-        return
-
-    raw_sql = row["parametroblobfile"]
-    if isinstance(raw_sql, memoryview):
-        raw_sql = raw_sql.tobytes()
-    if isinstance(raw_sql, (bytes, bytearray)):
-        try:
-            sql = raw_sql.decode("utf-8").strip()
-        except UnicodeDecodeError:
-            sql = raw_sql.decode("latin-1", errors="replace").strip()
-    else:
-        sql = str(raw_sql).strip()
-
-    if not sql:
-        print("La consulta almacenada esta vacia.")
-        return
-
-    print("SQL recuperado (SQL-ACT-VIO-SIAN):")
-    print(textwrap.indent(sql, "  "))
-    print("Ejecutando consulta almacenada en IURIXWEB...")
-    rows = fetchall_dict(conx.iurixweb(), sql)
-    imprimir_tabla(rows)
-
-
+    _consulta_desde_parametro(conx, "SQL-ACT-VIO-SIAN", conx.iurixweb(), "CONSULTAR IURIX WEB (SQL-ACT-VIO-SIAN)")
 def op_consulta_cj(conx: Conexiones):
-    banner("CONSULTA CJ (SQL-ACT-VIO-2026)")
-    row = fetchone_dict(conx.destino(), """
-        SELECT parametroblobfile
-        FROM parametro
-        WHERE parametronombre = %s
-        LIMIT 1
-    """, ("SQL-ACT-VIO-2026",))
-    if not row or not row.get("parametroblobfile"):
-        print("No se encontro SQL en parametro.parametroblobfile para SQL-ACT-VIO-2026")
-        return
-
-    raw_sql = row["parametroblobfile"]
-    if isinstance(raw_sql, memoryview):
-        raw_sql = raw_sql.tobytes()
-    if isinstance(raw_sql, (bytes, bytearray)):
-        try:
-            sql = raw_sql.decode("utf-8").strip()
-        except UnicodeDecodeError:
-            sql = raw_sql.decode("latin-1", errors="replace").strip()
-    else:
-        sql = str(raw_sql).strip()
-
-    if not sql:
-        print("La consulta almacenada esta vacia.")
-        return
-
-    print("SQL recuperado (SQL-ACT-VIO-2026):")
-    print(textwrap.indent(sql, "  "))
-    print("Ejecutando consulta almacenada en ED...")
-    rows = fetchall_dict(conx.ed(), sql)
-    imprimir_tabla(rows)
-
+    _consulta_desde_parametro(conx, "SQL-ACT-VIO-2026", conx.ed(), "CONSULTA CJ (SQL-ACT-VIO-2026)")
 # ---------------------------------------------------------------------------
 # Menu principal
 # ---------------------------------------------------------------------------
@@ -976,7 +887,6 @@ MENU_PRINCIPAL = """
   11) Consulta CJ (SQL-ACT-VIO-2026)
   q)  Salir
 """
-
 MENU_ACCIONES = """
 --- ACCIONES (cada una con preview + confirmacion) ---
   a)  A1  Descartar cedula (descartada=true, fechadescarte, usuario, motivo)
@@ -989,8 +899,6 @@ MENU_ACCIONES = """
   h)  B1  (BD ED) Forzar es_enotif=0 para reprocesar
   back) Volver
 """
-
-
 def submenu_acciones(conx: Conexiones):
     while True:
         print(MENU_ACCIONES)
@@ -1006,31 +914,22 @@ def submenu_acciones(conx: Conexiones):
         elif op == "g": acc_marcar_constancia(conx)
         elif op == "h": acc_forzar_es_enotif_ed(conx)
         else: print(">>> opcion invalida")
-
-
-
-
-
 class TablerosParCrudWindow:
     """CRUD amigable de tablerospar con grilla + formulario."""
-
     COLUMNS = [
         "par_id", "par_grupo", "par_clave", "par_subclave", "par_valor", "par_valor_json",
         "par_tipo", "par_ambiente", "par_activo", "par_descripcion", "par_usuario_alta",
         "par_usuario_modif",
     ]
-
     def __init__(self, parent, conx: Conexiones, write_log):
         self.parent = parent
         self.conx = conx
         self.conn = conx.panelws()
         self.write_log = write_log
         self.rows_by_id = {}
-
         self.win = tk.Toplevel(parent)
         self.win.title("CRUD TablerosPar")
         self.win.geometry("1250x650")
-
         filters = tk.LabelFrame(self.win, text="Filtros")
         filters.pack(fill=tk.X, padx=8, pady=6)
         self.var_grupo = tk.StringVar()
@@ -1042,7 +941,6 @@ class TablerosParCrudWindow:
         tk.Button(filters, text="Filtrar", command=self.refresh).grid(row=0, column=4, padx=4, pady=4)
         tk.Button(filters, text="Limpiar", command=self.clear_filters).grid(row=0, column=5, padx=4, pady=4)
         tk.Button(filters, text="Agregar", command=self.open_create_form).grid(row=0, column=6, padx=4, pady=4)
-
         grid_fr = tk.Frame(self.win)
         grid_fr.pack(fill=tk.BOTH, expand=True, padx=8, pady=6)
         show_cols = ["par_id", "par_grupo", "par_clave", "par_subclave", "par_tipo", "par_ambiente", "par_activo", "valor"]
@@ -1055,16 +953,13 @@ class TablerosParCrudWindow:
         self.tree.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
         yscroll.pack(side=tk.RIGHT, fill=tk.Y)
         self.tree.bind("<Double-1>", self._on_double_click)
-
         tk.Label(self.win, text="Doble click en una fila para editar / borrar.").pack(anchor="w", padx=10, pady=2)
         apply_neon_palette(self.win)
         self.refresh()
-
     def clear_filters(self):
         self.var_grupo.set("")
         self.var_clave.set("")
         self.refresh()
-
     def refresh(self):
         grupo = (self.var_grupo.get() or "").strip() or None
         clave = (self.var_clave.get() or "").strip() or None
@@ -1089,7 +984,6 @@ class TablerosParCrudWindow:
                 r.get("par_tipo"), r.get("par_ambiente"), r.get("par_activo"), valor
             ))
         self.write_log(f"CRUD tablerospar: {len(rows)} fila(s) cargadas.\n")
-
     def _on_double_click(self, _evt):
         sel = self.tree.selection()
         if not sel:
@@ -1097,13 +991,10 @@ class TablerosParCrudWindow:
         row = self.rows_by_id.get(sel[0])
         if row:
             self.open_edit_form(row)
-
     def open_create_form(self):
         self._open_form("Agregar tablerospar")
-
     def open_edit_form(self, row):
         self._open_form(f"Editar tablerospar #{row['par_id']}", row=row)
-
     def _open_form(self, title, row=None):
         win = tk.Toplevel(self.win)
         win.title(title)
@@ -1115,12 +1006,9 @@ class TablerosParCrudWindow:
             sv = tk.StringVar(value=val)
             vars_map[field] = sv
             tk.Entry(win, textvariable=sv, width=70).grid(row=idx, column=1, sticky="ew", padx=8, pady=4)
-
         vars_map["par_id"].set("" if row is None else str(row["par_id"]))
-
         def _normalize(v):
             return None if v is None or str(v).strip() == "" else str(v).strip()
-
         def do_save():
             values = {k: _normalize(v.get()) for k, v in vars_map.items()}
             values["par_activo"] = _parse_bool(values.get("par_activo"))
@@ -1157,7 +1045,6 @@ class TablerosParCrudWindow:
             self.conn.commit()
             self.refresh()
             win.destroy()
-
         def do_delete():
             if row is None:
                 return
@@ -1169,17 +1056,12 @@ class TablerosParCrudWindow:
             self.write_log(f"tablerospar #{row['par_id']} borrado.\n")
             self.refresh()
             win.destroy()
-
         btnf = tk.Frame(win)
         btnf.grid(row=len(self.COLUMNS)+1, column=0, columnspan=2, pady=12)
         tk.Button(btnf, text="Guardar", command=do_save).pack(side=tk.LEFT, padx=6)
         if row is not None:
             tk.Button(btnf, text="Borrar", command=do_delete).pack(side=tk.LEFT, padx=6)
         tk.Button(btnf, text="Cancelar", command=win.destroy).pack(side=tk.LEFT, padx=6)
-
-
-
-
 class GenericCrudWindow:
     def __init__(self, parent, conx: Conexiones, write_log, table: str, pk_fields, editable_fields):
         self.conn = conx.panelws()
@@ -1190,18 +1072,15 @@ class GenericCrudWindow:
         self.win = tk.Toplevel(parent)
         self.win.title(f"CRUD {table}")
         self.win.geometry("1100x620")
-
         top = tk.Frame(self.win)
         top.pack(fill=tk.X, padx=8, pady=6)
         tk.Button(top, text="Refrescar", command=self.refresh).pack(side=tk.LEFT, padx=4)
         tk.Button(top, text="Agregar", command=self.open_create_form).pack(side=tk.LEFT, padx=4)
-
         self.tree = ttk.Treeview(self.win, show="headings", height=20)
         self.tree.pack(fill=tk.BOTH, expand=True, padx=8, pady=8)
         self.tree.bind("<Double-1>", self._on_double_click)
         apply_neon_palette(self.win)
         self.refresh()
-
     def refresh(self):
         rows = fetchall_dict(self.conn, f"SELECT * FROM {self.table} ORDER BY 1 LIMIT 500")
         self.rows = rows
@@ -1216,7 +1095,6 @@ class GenericCrudWindow:
             key = "|".join(str(r.get(k)) for k in self.pk_fields)
             self.tree.insert("", tk.END, iid=key, values=[r.get(c) for c in cols])
         self.write_log(f"CRUD {self.table}: {len(rows)} fila(s).\n")
-
     def _on_double_click(self, _):
         sel = self.tree.selection()
         if not sel: return
@@ -1226,10 +1104,8 @@ class GenericCrudWindow:
             if [str(r.get(pk)) for pk in self.pk_fields] == k:
                 row = r; break
         if row: self._open_form(f"Editar {self.table}", row)
-
     def open_create_form(self):
         self._open_form(f"Agregar {self.table}", None)
-
     def _open_form(self, title, row):
         w=tk.Toplevel(self.win); w.title(title); w.geometry("700x420")
         fields=list(dict.fromkeys(self.pk_fields + self.editable_fields))
@@ -1263,10 +1139,8 @@ class GenericCrudWindow:
         if row is not None: tk.Button(bf,text="Borrar",command=delete).pack(side=tk.LEFT,padx=5)
         tk.Button(bf,text="Cancelar",command=w.destroy).pack(side=tk.LEFT,padx=5)
         apply_neon_palette(w)
-
 class DiagCedulasGUI:
     """Interfaz grafica simple para ejecutar operaciones del menu."""
-
     def __init__(self, conx: Conexiones):
         self.conx = conx
         self.root = tk.Tk()
@@ -1274,15 +1148,12 @@ class DiagCedulasGUI:
         self.root.title(f"Diagnostico Cedulas SIAN - {conx.sufijo}")
         self.root.geometry("1100x700")
         self.root.configure(bg=NEON_BG)
-
         top = tk.Frame(self.root)
         top.pack(fill=tk.X, padx=8, pady=6)
         tk.Label(top, text=f"Ambiente: {conx.sufijo}", font=("Arial", 11, "bold")).pack(side=tk.LEFT)
         tk.Button(top, text="Limpiar salida", command=self._clear).pack(side=tk.RIGHT)
-
         btns = tk.Frame(self.root)
         btns.pack(fill=tk.X, padx=8, pady=6)
-
         acciones = [
             ("1 Buscar cedula", op_buscar_cedula, "Consulta una cedula puntual y muestra su trazabilidad entre tablas clave del flujo SIAN -> Policia."),
             ("2 Estado end-to-end", op_estado_end2end, "Muestra el estado integral de una cedula a lo largo del pipeline, incluyendo pasos intermedios y estado final."),
@@ -1309,42 +1180,33 @@ class DiagCedulasGUI:
             ("CRUD secuserrole", lambda c: self._open_generic_crud("secuserrole", ["secuserid", "secroleid"], ["secuserid", "secroleid"]), "Gestiona vinculaciones entre usuarios y roles en la tabla secuserrole."),
             ("Buscar secuser+rel", op_buscar_secuser_relaciones, "Busca un usuario y muestra sus relaciones de seguridad asociadas."),
         ]
-
         for i, (txt, fn, desc) in enumerate(acciones):
             tk.Button(btns, text=txt, width=22, command=lambda f=fn, t=txt, d=desc: self._run_action(t, f, d)).grid(row=i // 4, column=i % 4, padx=4, pady=4, sticky="ew")
-
         self.output = scrolledtext.ScrolledText(self.root, wrap=tk.WORD, font=("Consolas", 10), bg=NEON_BG, fg=NEON_FG, insertbackground=NEON_FG)
         self.output.pack(fill=tk.BOTH, expand=True, padx=8, pady=8)
         apply_neon_palette(self.root)
         self._write("Interfaz iniciada. Ejecuta una accion con los botones superiores.\n")
-
     def _write(self, msg: str):
         self.output.insert(tk.END, msg)
         self.output.see(tk.END)
         self.root.update_idletasks()
-
     def _clear(self):
         self.output.delete("1.0", tk.END)
-
     def _ask(self, prompt: str) -> str:
         v = simpledialog.askstring("Entrada requerida", prompt, parent=self.root)
         return "" if v is None else v
-
     def _confirm(self, prompt: str) -> bool:
         return messagebox.askyesno("Confirmacion", prompt, parent=self.root)
-
     def _run_action(self, title: str, fn, description: str = ""):
         if description:
             self._write(f"Descripcion: {description}\n")
         self._write(f"\n===== {title} =====\n")
         old_input = builtins.input
-
         def gui_input(prompt=""):
             p = prompt.strip() or "Ingrese valor"
             if "confirma" in p.lower() or "confirmar" in p.lower() or "confirma delete" in p.lower():
                 return "c" if self._confirm(p) else ""
             return self._ask(p)
-
         buf = io.StringIO()
         try:
             builtins.input = gui_input
@@ -1356,31 +1218,22 @@ class DiagCedulasGUI:
         finally:
             builtins.input = old_input
         self._write(buf.getvalue())
-
     def _open_tablerospar_crud(self, _conx):
         TablerosParCrudWindow(self.root, self.conx, self._write)
-
     def _open_generic_crud(self, table, pk_fields, editable_fields):
         GenericCrudWindow(self.root, self.conx, self._write, table, pk_fields, editable_fields)
-
     def run(self):
         self.root.mainloop()
-
-
-
 def main():
     parser = argparse.ArgumentParser(description="Diagnostico cedulas SIAN")
     parser.add_argument("--test", type=int, default=0, help="1=TEST (.251), 0=PROD (.250)")
     parser.add_argument("--gui", action="store_true", help="Abrir interfaz grafica Tkinter")
     args = parser.parse_args()
-
     conx = Conexiones(test=bool(args.test))
-
     if args.gui:
         app = DiagCedulasGUI(conx)
         app.run()
         return
-
     try:
         while True:
             print(MENU_PRINCIPAL.format(sufijo=conx.sufijo))
@@ -1411,7 +1264,5 @@ def main():
     finally:
         conx.cerrar()
         print("Bye.")
-
-
 if __name__ == "__main__":
     main()
