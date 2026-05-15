@@ -924,6 +924,40 @@ def op_consultar_iurix_web(conx: Conexiones):
     rows = fetchall_dict(conx.iurixweb(), sql)
     imprimir_tabla(rows)
 
+
+def op_consulta_cj(conx: Conexiones):
+    banner("CONSULTA CJ (SQL-ACT-VIO-2026)")
+    row = fetchone_dict(conx.destino(), """
+        SELECT parametroblobfile
+        FROM parametro
+        WHERE parametronombre = %s
+        LIMIT 1
+    """, ("SQL-ACT-VIO-2026",))
+    if not row or not row.get("parametroblobfile"):
+        print("No se encontro SQL en parametro.parametroblobfile para SQL-ACT-VIO-2026")
+        return
+
+    raw_sql = row["parametroblobfile"]
+    if isinstance(raw_sql, memoryview):
+        raw_sql = raw_sql.tobytes()
+    if isinstance(raw_sql, (bytes, bytearray)):
+        try:
+            sql = raw_sql.decode("utf-8").strip()
+        except UnicodeDecodeError:
+            sql = raw_sql.decode("latin-1", errors="replace").strip()
+    else:
+        sql = str(raw_sql).strip()
+
+    if not sql:
+        print("La consulta almacenada esta vacia.")
+        return
+
+    print("SQL recuperado (SQL-ACT-VIO-2026):")
+    print(textwrap.indent(sql, "  "))
+    print("Ejecutando consulta almacenada en ED...")
+    rows = fetchall_dict(conx.ed(), sql)
+    imprimir_tabla(rows)
+
 # ---------------------------------------------------------------------------
 # Menu principal
 # ---------------------------------------------------------------------------
@@ -939,6 +973,7 @@ MENU_PRINCIPAL = """
   8)  Stats por dia / dac_cod / perror
   9)  ACCIONES correctivas
   10) Consultar IURIX WEB (SQL-ACT-VIO-SIAN)
+  11) Consulta CJ (SQL-ACT-VIO-2026)
   q)  Salir
 """
 
@@ -1258,6 +1293,7 @@ class DiagCedulasGUI:
             ("7 Estado ED", op_estado_ed, "Verifica el estado actual en ED y ayuda a contrastar diferencias con DESTINO."),
             ("8 Stats", op_stats, "Genera metricas y conteos resumidos para monitorear volumen y salud del flujo."),
             ("10 IURIX WEB", op_consultar_iurix_web, "Lee SQL-ACT-VIO-SIAN desde DESTINO.parametro y ejecuta esa consulta en la BD IURIXWEB."),
+            ("11 Consulta CJ", op_consulta_cj, "recupera de carpeta judicial las notificaciones que seran consideradas en la importacion de datos a tablero"),
             ("A1 Descartar", acc_descartar, "Marca una cedula como descartada de forma controlada tras confirmar la operacion."),
             ("A2 Re-habilitar", acc_rehabilitar, "Revierte un descarte para reingresar la cedula al circuito de procesamiento."),
             ("A2b Forzar estado", acc_forzar_estado, "Actualiza manualmente el estado de una cedula para destrabar casos excepcionales."),
@@ -1361,6 +1397,7 @@ def main():
                 elif op == "8": op_stats(conx)
                 elif op == "9": submenu_acciones(conx)
                 elif op == "10": op_consultar_iurix_web(conx)
+                elif op == "11": op_consulta_cj(conx)
                 else: print(">>> opcion invalida")
             except KeyboardInterrupt:
                 print("\n>>> volviendo al menu...")
