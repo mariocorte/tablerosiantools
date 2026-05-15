@@ -27,6 +27,13 @@ DATABASES = {
             "user": "",
             "password": "",
         },
+        "IURIXWEB": {
+            "host": "",
+            "port": 5432,
+            "dbname": "",
+            "user": "",
+            "password": "",
+        },
     },
     "TEST": {
         "DESTINO": {
@@ -44,6 +51,13 @@ DATABASES = {
             "password": "",
         },
         "PANELNOTIFICACIONESWS": {
+            "host": "",
+            "port": 5432,
+            "dbname": "",
+            "user": "",
+            "password": "",
+        },
+        "IURIXWEB": {
             "host": "",
             "port": 5432,
             "dbname": "",
