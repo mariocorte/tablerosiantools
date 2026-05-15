@@ -903,7 +903,17 @@ def op_consultar_iurix_web(conx: Conexiones):
         print("No se encontro SQL en parametro.parametroblobfile para SQL-ACT-VIO-SIAN")
         return
 
-    sql = str(row["parametroblobfile"]).strip()
+    raw_sql = row["parametroblobfile"]
+    if isinstance(raw_sql, memoryview):
+        raw_sql = raw_sql.tobytes()
+    if isinstance(raw_sql, (bytes, bytearray)):
+        try:
+            sql = raw_sql.decode("utf-8").strip()
+        except UnicodeDecodeError:
+            sql = raw_sql.decode("latin-1", errors="replace").strip()
+    else:
+        sql = str(raw_sql).strip()
+
     if not sql:
         print("La consulta almacenada esta vacia.")
         return
