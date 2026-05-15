@@ -891,6 +891,31 @@ def op_buscar_secuser_relaciones(conx: Conexiones):
     imprimir_tabla(rows)
 
 
+def _sql_es_solo_lectura(sql: str) -> bool:
+    """Valida de forma defensiva que la SQL almacenada sea de solo lectura."""
+    if not sql:
+        return False
+
+    text = sql.lstrip("\ufeff \t\r\n")
+
+    # Ignora comentarios iniciales (-- ... y /* ... */)
+    while True:
+        if text.startswith("--"):
+            nl = text.find("\n")
+            text = "" if nl == -1 else text[nl + 1 :]
+            text = text.lstrip()
+            continue
+        if text.startswith("/*"):
+            end = text.find("*/")
+            if end == -1:
+                return False
+            text = text[end + 2 :].lstrip()
+            continue
+        break
+
+    low = text.lower()
+    return low.startswith(("select", "with"))
+
 def op_consultar_iurix_web(conx: Conexiones):
     banner("CONSULTAR IURIX WEB (SQL-ACT-VIO-SIAN)")
     row = fetchone_dict(conx.destino(), """
@@ -907,7 +932,7 @@ def op_consultar_iurix_web(conx: Conexiones):
     if not sql:
         print("La consulta almacenada esta vacia.")
         return
-    if not sql.lower().startswith(("select", "with")):
+    if not _sql_es_solo_lectura(sql):
         raise RuntimeError("La consulta almacenada no parece ser de solo lectura (SELECT/WITH).")
 
     print("Ejecutando consulta almacenada en IURIXWEB...")
