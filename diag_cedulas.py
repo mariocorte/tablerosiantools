@@ -907,6 +907,9 @@ def op_consultar_iurix_web(conx: Conexiones):
     if not sql:
         print("La consulta almacenada esta vacia.")
         return
+
+    print("SQL recuperado (SQL-ACT-VIO-SIAN):")
+    print(textwrap.indent(sql, "  "))
     print("Ejecutando consulta almacenada en IURIXWEB...")
     rows = fetchall_dict(conx.iurixweb(), sql)
     imprimir_tabla(rows)
