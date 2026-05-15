@@ -238,6 +238,13 @@ def fetchall_dict(conn, sql, params=None):
         return cur.fetchall()
 
 
+def fetchone_dict(conn, sql, params=None):
+    """Helper: ejecuta SELECT y devuelve una sola fila como dict (o None)."""
+    with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
+        cur.execute(sql, params or {})
+        return cur.fetchone()
+
+
 # ---------------------------------------------------------------------------
 # Operaciones de busqueda
 # ---------------------------------------------------------------------------
