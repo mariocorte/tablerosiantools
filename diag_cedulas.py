@@ -154,7 +154,7 @@ def confirmar(msg="confirma con 'c' (cualquier otra cosa = cancelar)") -> bool:
 # Conexiones
 # ---------------------------------------------------------------------------
 class Conexiones:
-    """Resuelve y cachea conexiones psycopg2 (DESTINO, ED y PANELNOTIFICACIONESWS)."""
+    """Resuelve y cachea conexiones psycopg2 (DESTINO, ED, PANELNOTIFICACIONESWS e IURIXWEB)."""
 
     def __init__(self, test: bool):
         self.test = test
@@ -163,6 +163,7 @@ class Conexiones:
         self._cfg_destino = cfg.get("DESTINO")
         self._cfg_ed = cfg.get("ED")
         self._cfg_panelws = cfg.get("PANELNOTIFICACIONESWS")
+        self._cfg_iurixweb = cfg.get("IURIXWEB")
 
         if not self._cfg_destino:
             sys.exit(f"ERROR: falta DATABASES['{self.sufijo}']['DESTINO'] en db_config.py")
@@ -179,6 +180,12 @@ class Conexiones:
                 "-- el CRUD de panelnotificacionesws usara DESTINO como fallback."
             )
 
+        if not self._cfg_iurixweb:
+            print(
+                f"AVISO: falta DATABASES['{self.sufijo}']['IURIXWEB'] en db_config.py "
+                "-- la opcion 'consultar iurix web' va a fallar."
+            )
+
         destino_host = self._cfg_destino.get("host", "?")
         destino_db = self._cfg_destino.get("dbname") or self._cfg_destino.get("database", "?")
         print(f"[destino] {destino_host}/{destino_db} ({self.sufijo})")
@@ -186,6 +193,7 @@ class Conexiones:
         self._conn_destino = None
         self._conn_ed = None
         self._conn_panelws = None
+        self._conn_iurixweb = None
 
     def destino(self):
         if self._conn_destino is None or self._conn_destino.closed:
@@ -207,8 +215,15 @@ class Conexiones:
             self._conn_panelws = psycopg2.connect(**self._cfg_panelws)
         return self._conn_panelws
 
+    def iurixweb(self):
+        if not self._cfg_iurixweb:
+            raise RuntimeError("BD IURIXWEB no configurada para este sufijo")
+        if self._conn_iurixweb is None or self._conn_iurixweb.closed:
+            self._conn_iurixweb = psycopg2.connect(**self._cfg_iurixweb)
+        return self._conn_iurixweb
+
     def cerrar(self):
-        for c in (self._conn_destino, self._conn_ed, self._conn_panelws):
+        for c in (self._conn_destino, self._conn_ed, self._conn_panelws, self._conn_iurixweb):
             try:
                 if c and not c.closed:
                     c.close()
@@ -221,6 +236,13 @@ def fetchall_dict(conn, sql, params=None):
     with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
         cur.execute(sql, params or {})
         return cur.fetchall()
+
+
+def fetchone_dict(conn, sql, params=None):
+    """Helper: ejecuta SELECT y devuelve una sola fila como dict (o None)."""
+    with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
+        cur.execute(sql, params or {})
+        return cur.fetchone()
 
 
 # ---------------------------------------------------------------------------
@@ -868,6 +890,30 @@ def op_buscar_secuser_relaciones(conx: Conexiones):
     """, {"id": user_id, "name": username})
     imprimir_tabla(rows)
 
+
+def op_consultar_iurix_web(conx: Conexiones):
+    banner("CONSULTAR IURIX WEB (SQL-ACT-VIO-SIAN)")
+    row = fetchone_dict(conx.destino(), """
+        SELECT parametroblobfile
+        FROM parametro
+        WHERE parametronombre = %s
+        LIMIT 1
+    """, ("SQL-ACT-VIO-SIAN",))
+    if not row or not row.get("parametroblobfile"):
+        print("No se encontro SQL en parametro.parametroblobfile para SQL-ACT-VIO-SIAN")
+        return
+
+    sql = str(row["parametroblobfile"]).strip()
+    if not sql:
+        print("La consulta almacenada esta vacia.")
+        return
+    if not sql.lower().startswith(("select", "with")):
+        raise RuntimeError("La consulta almacenada no parece ser de solo lectura (SELECT/WITH).")
+
+    print("Ejecutando consulta almacenada en IURIXWEB...")
+    rows = fetchall_dict(conx.iurixweb(), sql)
+    imprimir_tabla(rows)
+
 # ---------------------------------------------------------------------------
 # Menu principal
 # ---------------------------------------------------------------------------
@@ -882,6 +928,7 @@ MENU_PRINCIPAL = """
   7)  Estado origen ED (act + uje_act + dac + exp)
   8)  Stats por dia / dac_cod / perror
   9)  ACCIONES correctivas
+  10) Consultar IURIX WEB (SQL-ACT-VIO-SIAN)
   q)  Salir
 """
 
@@ -1200,6 +1247,7 @@ class DiagCedulasGUI:
             ("6 Historial MP", op_historico_mp, "Consulta el historial de movimientos/procesos para una cedula en el modulo MP."),
             ("7 Estado ED", op_estado_ed, "Verifica el estado actual en ED y ayuda a contrastar diferencias con DESTINO."),
             ("8 Stats", op_stats, "Genera metricas y conteos resumidos para monitorear volumen y salud del flujo."),
+            ("10 IURIX WEB", op_consultar_iurix_web, "Lee SQL-ACT-VIO-SIAN desde DESTINO.parametro y ejecuta esa consulta en la BD IURIXWEB."),
             ("A1 Descartar", acc_descartar, "Marca una cedula como descartada de forma controlada tras confirmar la operacion."),
             ("A2 Re-habilitar", acc_rehabilitar, "Revierte un descarte para reingresar la cedula al circuito de procesamiento."),
             ("A2b Forzar estado", acc_forzar_estado, "Actualiza manualmente el estado de una cedula para destrabar casos excepcionales."),
@@ -1302,6 +1350,7 @@ def main():
                 elif op == "7": op_estado_ed(conx)
                 elif op == "8": op_stats(conx)
                 elif op == "9": submenu_acciones(conx)
+                elif op == "10": op_consultar_iurix_web(conx)
                 else: print(">>> opcion invalida")
             except KeyboardInterrupt:
                 print("\n>>> volviendo al menu...")
